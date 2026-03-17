@@ -103,7 +103,12 @@ def test_collect_one_article(pw_adapter, live_settings, live_session, selectors)
         settings=live_settings,
     )
 
-    agent.run()
+    run = agent.run()
+
+    # Run must succeed with zero errors
+    assert run.status == "success", f"expected success, got {run.status}"
+    assert run.errors == 0, f"expected 0 errors, got {run.errors}"
+    assert run.articles_collected >= 1, "no articles collected"
 
     # Verify: at least 1 article
     articles = live_session.query(Article).all()
@@ -117,3 +122,12 @@ def test_collect_one_article(pw_adapter, live_settings, live_session, selectors)
             .all()
         )
         assert len(sections) >= 1, f"article {article.slug} has no sections"
+
+    # Verify: snapshots go to temp dir, not production data/snapshots
+    import os
+    prod_snapshots = os.path.join(os.getcwd(), "data", "snapshots")
+    for article in articles:
+        if article.snapshot_path:
+            assert not article.snapshot_path.startswith(prod_snapshots), (
+                f"snapshot went to production path: {article.snapshot_path}"
+            )

@@ -59,9 +59,11 @@ def _skip_unless_llm(settings):
 
 
 @pytest.fixture(scope="module")
-def live_settings():
-    """Load settings with live opt-in gates."""
-    return _skip_unless_live()
+def live_settings(tmp_path_factory):
+    """Load settings with live opt-in gates. data_dir → temp to avoid prod pollution."""
+    settings = _skip_unless_live()
+    settings.data_dir = str(tmp_path_factory.mktemp("data"))
+    return settings
 
 
 @pytest.fixture(scope="module")

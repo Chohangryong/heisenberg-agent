@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from heisenberg_agent.parsers.sections import SectionData, build_body_text, extract_sections
@@ -190,7 +191,12 @@ class CollectorAgent:
     # ------------------------------------------------------------------
 
     def _discover(self) -> list[ListItem]:
-        """Load latest page(s) and extract article list."""
+        """Load latest page(s), dedupe, and return unique article list.
+
+        Flow: collect all pages → dedupe by canonical url → slice to max_articles_per_cycle.
+        Dedupe key: canonical url (full absolute url) first, slug as fallback.
+        Dedupe runs BEFORE max_articles_per_cycle slice.
+        """
         cfg = self._settings.collector
         all_items: list[ListItem] = []
 
@@ -207,7 +213,38 @@ class CollectorAgent:
                 logger.error("collector.discover_failed", page=page_num, error=str(e))
                 break
 
-        return all_items[:cfg.max_articles_per_cycle]
+        # Dedupe: url first (matches UNIQUE(source_site, url) constraint), slug fallback.
+        # Preserves first occurrence order.
+        before = len(all_items)
+        seen: dict[str, ListItem] = {}
+        for item in all_items:
+            key = self._canonical_url(item.url) or item.slug
+            seen.setdefault(key, item)
+        unique_items = list(seen.values())
+
+        dupes_removed = before - len(unique_items)
+        if dupes_removed:
+            logger.info(
+                "collector.discover_deduped",
+                before=before,
+                after=len(unique_items),
+                removed=dupes_removed,
+            )
+
+        return unique_items[:cfg.max_articles_per_cycle]
+
+    def _canonical_url(self, url: str) -> str:
+        """Normalize a list-page url to match the full url stored in DB.
+
+        Relative paths like '/gtc2026/' become 'https://heisenberg.kr/gtc2026/'.
+        Already-absolute urls are returned as-is.
+        Returns empty string only if url is empty.
+        """
+        if not url:
+            return ""
+        if url.startswith("/"):
+            return f"{self._settings.collector.base_url}{url}"
+        return url
 
     # ------------------------------------------------------------------
     # Step 3: Filter
@@ -341,6 +378,27 @@ class CollectorAgent:
                     article_repo.mark_noop(self._session, existing)
 
             logger.info("collector.article_done", slug=item.slug, disposition=fi.disposition)
+
+        except IntegrityError:
+            # Duplicate article INSERT — absorb if same (source_site, url) already exists.
+            self._session.rollback()
+            existing = article_repo.find_by_url(self._session, source_site, full_url)
+            if existing is not None:
+                article_repo.mark_noop(self._session, existing)
+                logger.info(
+                    "collector.duplicate_absorbed",
+                    slug=item.slug,
+                    url=full_url,
+                    existing_id=existing.id,
+                )
+            else:
+                # IntegrityError on a different constraint — treat as real error
+                logger.error("collector.article_failed", slug=item.slug, error="IntegrityError (non-duplicate)")
+                article_repo.record_run_error(
+                    self._session, run.id, slug=item.slug, url=full_url,
+                    error="IntegrityError (non-duplicate)",
+                )
+                run.errors += 1
 
         except Exception as e:
             logger.error("collector.article_failed", slug=item.slug, error=str(e))

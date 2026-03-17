@@ -49,6 +49,15 @@ def find_by_slug(session: Session, source_site: str, slug: str) -> Article | Non
     return session.execute(stmt).scalar_one_or_none()
 
 
+def find_by_url(session: Session, source_site: str, url: str) -> Article | None:
+    """Find an article by source_site + url (matches UNIQUE constraint)."""
+    stmt = select(Article).where(
+        Article.source_site == source_site,
+        Article.url == url,
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
 def find_existing_slugs(
     session: Session, source_site: str, slugs: list[str]
 ) -> dict[str, Article]:

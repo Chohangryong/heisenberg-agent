@@ -100,8 +100,9 @@ def test_full_collect_one_article(db_session: Session):
     )
     run = agent.run()
 
-    # Run should succeed
-    assert run.status in ("success", "partial")
+    # Run should succeed with zero errors
+    assert run.status == "success", f"expected success, got {run.status}"
+    assert run.errors == 0, f"expected 0 errors, got {run.errors}"
     assert run.articles_found == 3  # fixture has 3 cards
 
     # Articles created
@@ -208,3 +209,91 @@ def test_auth_failure_records_error(db_session: Session):
     assert run.status == "failed"
     db_run = db_session.get(CollectionRun, run.id)
     assert db_run.errors >= 1
+
+
+def test_duplicate_slugs_across_pages_deduped(db_session: Session):
+    """Multi-page discover with overlapping articles → dedupe before filter.
+
+    Simulates page 1 and page 2 both returning the same 3 articles.
+    After dedupe only 3 unique articles should be processed, not 6.
+    """
+
+    class MultiPageAdapter(FakeAdapter):
+        """Returns the same list HTML for both page 1 and page 2."""
+
+        def load_page(self, url: str, **kw: Any) -> str:
+            if "latest" in url:
+                return self._list_html
+            return self._detail_html
+
+    class _MultiPageCollectorSettings(_CollectorSettings):
+        max_pages_to_scan = 2  # two pages → duplicates
+
+    class _MultiPageSettings(FakeSettings):
+        collector = _MultiPageCollectorSettings()
+
+    selectors = load_selectors()
+    agent = CollectorAgent(
+        adapter=MultiPageAdapter(),
+        session=db_session,
+        selectors=selectors,
+        settings=_MultiPageSettings(),
+    )
+    run = agent.run()
+
+    assert run.status == "success", f"expected success, got {run.status}"
+    assert run.errors == 0, f"expected 0 errors, got {run.errors}"
+    # 3 unique articles (not 6)
+    assert run.articles_found == 3
+    articles = db_session.query(Article).all()
+    assert len(articles) == 3
+
+
+def test_integrity_error_absorbed_as_noop(db_session: Session):
+    """If dedupe misses and IntegrityError fires, absorb as duplicate noop.
+
+    Approach: first run inserts normally. Second run uses a fake adapter
+    that makes the discover step return 1 page, but filter sees all items
+    as NEW because we clear the session identity map (simulate stale lookup).
+    Instead we force the scenario: directly insert an article, then run
+    the collector which discovers the same slug → IntegrityError → absorbed.
+    """
+    from heisenberg_agent.storage.repositories import articles as article_repo
+    from heisenberg_agent.utils.dt import now_utc
+
+    selectors = load_selectors()
+
+    # Pre-insert an article that matches the first fixture card
+    article_repo.save_new_article(
+        db_session,
+        article_data={
+            "source_site": "heisenberg.kr",
+            "slug": "gtc2026",
+            "url": "https://heisenberg.kr/gtc2026/",
+            "title": "GTC 2026 핵심 정리",
+            "collected_at": now_utc(),
+        },
+        sections=[],
+        image_urls=[],
+        tag_names=[],
+    )
+    count_before = db_session.query(Article).count()
+    assert count_before == 1
+
+    # Run collector — gtc2026 will be seen as NEW (fresh filter lookup returns
+    # it, but it already exists in DB). The save_new_article will hit
+    # IntegrityError which should be absorbed.
+    # The other 2 articles are genuinely new.
+    agent = CollectorAgent(
+        adapter=FakeAdapter(),
+        session=db_session,
+        selectors=selectors,
+        settings=FakeSettings(),
+    )
+    run = agent.run()
+
+    assert run.errors == 0, f"expected 0 errors, got {run.errors}"
+    assert run.status == "success"
+    # 3 unique articles total (1 pre-existing + 2 new)
+    articles = db_session.query(Article).all()
+    assert len(articles) == 3
