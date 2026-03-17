@@ -37,6 +37,7 @@ class AnalysisSettings(BaseSettings):
 
 
 class VectorDBSettings(BaseSettings):
+    enabled: bool = True
     provider: str = "chromadb"
     persist_dir: str = "./data/vectordb"
     collection_name: str = "heisenberg_articles"
@@ -46,6 +47,7 @@ class VectorDBSettings(BaseSettings):
 
 
 class NotionSettings(BaseSettings):
+    enabled: bool = True
     api_version: str = "2022-06-28"
     sync_mode: str = "one_way"
     dry_run: bool = False

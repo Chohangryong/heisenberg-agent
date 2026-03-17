@@ -11,7 +11,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Heisenberg Agent")
     parser.add_argument(
         "--mode",
-        choices=["collect", "analyze"],
+        choices=["collect", "analyze", "sync"],
         default="collect",
         help="Execution mode (default: collect)",
     )
@@ -33,6 +33,8 @@ def main() -> None:
         _run_collect(settings, engine, logger)
     elif args.mode == "analyze":
         _run_analyze(settings, engine, logger)
+    elif args.mode == "sync":
+        _run_sync(settings, engine, logger)
 
 
 def _run_collect(settings, engine, logger) -> None:
@@ -98,6 +100,36 @@ def _run_analyze(settings, engine, logger) -> None:
         )
         stats = agent.run()
         logger.info("analyze_finished", **stats)
+    finally:
+        session.close()
+
+
+def _run_sync(settings, engine, logger) -> None:
+    """Run one sync cycle."""
+    from heisenberg_agent.adapters.chroma_adapter import ChromaAdapter
+    from heisenberg_agent.adapters.notion_adapter import NotionAdapter
+    from heisenberg_agent.agents.sync_agent import SyncAgent
+
+    session_factory = get_session_factory(engine)
+    session = session_factory()
+
+    chroma = None
+    if getattr(settings.vectordb, "enabled", True):
+        chroma = ChromaAdapter.from_settings(settings)
+
+    notion = None
+    if getattr(settings.notion, "enabled", True):
+        notion = NotionAdapter.from_settings(settings)
+
+    try:
+        agent = SyncAgent(
+            session=session,
+            chroma_adapter=chroma,
+            notion_adapter=notion,
+            settings=settings,
+        )
+        stats = agent.run()
+        logger.info("sync_finished", **stats)
     finally:
         session.close()
 

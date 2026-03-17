@@ -311,6 +311,9 @@ class SyncJob(Base):
     # External system ID (Notion page_id or Chroma doc id)
     external_id: Mapped[str | None] = mapped_column(Text, default=None)
 
+    # Which analysis_run this job was last synced with
+    synced_analysis_id: Mapped[int | None] = mapped_column(Integer, default=None)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
