@@ -58,6 +58,13 @@ class LoggingSettings(BaseSettings):
     file: str = "logs/heisenberg.log"
 
 
+class SchedulerSettings(BaseSettings):
+    cron_hours: list[int] = [8, 13, 19]
+    max_instances: int = 1
+    coalesce: bool = True
+    misfire_grace_time_seconds: int = 3600
+
+
 class AppSettings(BaseSettings):
     """Root settings. Loads .env for secrets, settings.yaml for structure."""
 
@@ -81,6 +88,9 @@ class AppSettings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     log_level: str = "INFO"
+    manual_trigger_token: str = ""
+    manual_trigger_bind: str = "127.0.0.1"
+    manual_trigger_port: int = 8321
 
     # Sub-settings (populated from YAML)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -89,6 +99,7 @@ class AppSettings(BaseSettings):
     vectordb: VectorDBSettings = Field(default_factory=VectorDBSettings)
     notion: NotionSettings = Field(default_factory=NotionSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
 
 
 def load_settings(
