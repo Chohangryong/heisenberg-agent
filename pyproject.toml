@@ -51,6 +51,7 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not live'"
 markers = [
-    "live: tests that hit the real site (deselect with '-m not live')",
+    "live: tests that hit the real site (requires LIVE_SMOKE=1 + credentials)",
 ]
