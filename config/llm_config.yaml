@@ -1,0 +1,15 @@
+summary:
+  provider: "anthropic"
+  model: "claude-sonnet-4-5"
+  max_tokens: 1800
+  temperature: 0.2
+
+critique:
+  provider: "anthropic"
+  model: "claude-sonnet-4-5"
+  max_tokens: 1800
+  temperature: 0.3
+
+fallback:
+  provider: "openai"
+  model: "gpt-4o"

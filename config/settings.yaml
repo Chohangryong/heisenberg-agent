@@ -1,0 +1,52 @@
+app:
+  timezone: "Asia/Seoul"
+  environment: "local"
+  data_dir: "./data"
+  log_dir: "./logs"
+
+database:
+  url: "sqlite:///data/db/heisenberg.db"
+
+collector:
+  base_url: "https://heisenberg.kr"
+  login_url: "https://heisenberg.kr/login/"
+  latest_url: "https://heisenberg.kr/latest/"
+  auth_mode: "playwright_storage_state"
+  html_source_of_truth: "rendered_dom"
+  max_pages_to_scan: 3
+  max_articles_per_cycle: 20
+  duplicate_safety_window_days: 7
+  request_delay_seconds:
+    min: 2
+    max: 5
+
+snapshot:
+  enabled: true
+  emulate_media: "screen"
+  print_background: true
+  ready_selector: "article, .entry-content, .post-content"
+  max_wait_ms: 10000
+
+analysis:
+  analysis_version: "analysis.v1"
+  prompt_bundle_version: "prompt-bundle.v1"
+
+vectordb:
+  provider: "chromadb"
+  persist_dir: "./data/vectordb"
+  collection_name: "heisenberg_articles"
+  embedding_provider: "openai"
+  embedding_model: "text-embedding-3-small"
+  embedding_version: "embed.v1"
+
+notion:
+  api_version: "2022-06-28"
+  sync_mode: "one_way"
+  obey_retry_after: true
+  max_blocks_per_payload: 200
+  max_payload_bytes: 200000
+  dry_run: false
+
+logging:
+  level: "INFO"
+  file: "logs/heisenberg.log"
