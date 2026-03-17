@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.heisenberg.agent</string>
+
+  <!-- All paths MUST be absolute. launchd does not expand ~ or $HOME. -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/hangryongcho/heisenberg-agent/.venv/bin/python</string>
+    <string>-m</string>
+    <string>heisenberg_agent.main</string>
+    <string>--mode</string>
+    <string>scheduler</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hangryongcho/heisenberg-agent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/hangryongcho/heisenberg-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- Start on login -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart only on abnormal exit (crash). exit 0 = no restart. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Crash loop mitigation: wait 30s before restarting after crash -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- launchd-level stdout/stderr capture (absolute paths required) -->
+  <key>StandardOutPath</key>
+  <string>/Users/hangryongcho/heisenberg-agent/logs/launchd-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/hangryongcho/heisenberg-agent/logs/launchd-stderr.log</string>
+
+</dict>
+</plist>

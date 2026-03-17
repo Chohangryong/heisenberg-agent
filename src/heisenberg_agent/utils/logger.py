@@ -23,6 +23,8 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
     ]
 
     if log_file:
+        from pathlib import Path
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
 
     logging.basicConfig(
