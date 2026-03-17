@@ -11,7 +11,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Heisenberg Agent")
     parser.add_argument(
         "--mode",
-        choices=["collect"],
+        choices=["collect", "analyze"],
         default="collect",
         help="Execution mode (default: collect)",
     )
@@ -31,6 +31,8 @@ def main() -> None:
 
     if args.mode == "collect":
         _run_collect(settings, engine, logger)
+    elif args.mode == "analyze":
+        _run_analyze(settings, engine, logger)
 
 
 def _run_collect(settings, engine, logger) -> None:
@@ -65,6 +67,38 @@ def _run_collect(settings, engine, logger) -> None:
         )
     finally:
         adapter.close()
+        session.close()
+
+
+def _run_analyze(settings, engine, logger) -> None:
+    """Run one analysis cycle."""
+    from heisenberg_agent.agents.analyzer import AnalyzerAgent
+    from heisenberg_agent.llm.client import LLMClient
+
+    llm_config = {}
+    try:
+        from pathlib import Path
+        import yaml
+        config_path = Path("config/llm_config.yaml")
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                llm_config = yaml.safe_load(f) or {}
+    except Exception:
+        pass
+
+    session_factory = get_session_factory(engine)
+    session = session_factory()
+    llm_client = LLMClient(llm_config)
+
+    try:
+        agent = AnalyzerAgent(
+            session=session,
+            llm_client=llm_client,
+            settings=settings,
+        )
+        stats = agent.run()
+        logger.info("analyze_finished", **stats)
+    finally:
         session.close()
 
 

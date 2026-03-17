@@ -122,3 +122,100 @@ def build_body_text(sections: list[SectionData]) -> str:
     content_kinds = {"one_minute_summary", "main_body", "researcher_opinion"}
     parts = [s.body_text for s in sections if s.section_kind in content_kinds]
     return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Analysis input assembly
+# ---------------------------------------------------------------------------
+
+# Section kinds included in analysis input (in priority order for truncation)
+_ANALYSIS_INCLUDE_KINDS = {"one_minute_summary", "main_body", "researcher_opinion"}
+
+# Section kinds excluded from analysis input
+# researcher_profile, membership_gate_notice, qa, coffeechat, misc
+
+_TRUNCATION_MARKER = "\n\n[본문이 잘렸습니다]"
+
+# Kinds that are preserved in full during truncation (shorter, high-value)
+_PRESERVE_KINDS = {"one_minute_summary", "researcher_opinion"}
+
+
+def build_analysis_input(
+    sections: list[SectionData],
+    max_chars: int = 12000,
+) -> str:
+    """Build analysis input text from article sections.
+
+    Includes only analysis-relevant section kinds, sorted by ordinal.
+    Each section is prefixed with "## {section_kind}" header.
+    If total text exceeds max_chars, main_body is truncated from the end
+    while one_minute_summary and researcher_opinion are preserved in full.
+
+    Truncation contract:
+    - Preserved kinds (summary, opinion) are emitted in full at their ordinal position.
+    - Truncatable kinds (main_body) are joined into a single compressed block,
+      truncated from the end, and emitted once at the position of the first
+      truncatable section. Later truncatable sections are collapsed into this block,
+      so their individual ordinal positions are NOT preserved after truncation.
+    - This policy is accepted at the current stage.
+
+    Args:
+        sections: List of SectionData (from extract_sections or DB).
+        max_chars: Maximum character count. Default 12000 (~3000-4000 tokens).
+
+    Returns:
+        Assembled text ready for LLM input.
+    """
+    # Filter and sort by ordinal
+    relevant = sorted(
+        [s for s in sections if s.section_kind in _ANALYSIS_INCLUDE_KINDS],
+        key=lambda s: s.ordinal,
+    )
+
+    if not relevant:
+        return ""
+
+    # Build indexed parts: (original_position, kind, formatted_text)
+    parts: list[tuple[int, str, str]] = []
+    for idx, s in enumerate(relevant):
+        formatted = f"## {s.section_kind}\n{s.body_text}"
+        parts.append((idx, s.section_kind, formatted))
+
+    # Check total length
+    separator_len = (len(parts) - 1) * 2  # "\n\n" between parts
+    total = sum(len(text) for _, _, text in parts) + separator_len
+    if total <= max_chars:
+        return "\n\n".join(text for _, _, text in parts)
+
+    # Truncation needed — compute preserved (summary/opinion) vs truncatable (main_body)
+    preserved_len = 0
+    truncatable_texts: list[str] = []
+
+    for _, kind, text in parts:
+        if kind in _PRESERVE_KINDS:
+            preserved_len += len(text) + 2  # +2 for "\n\n" separator
+        else:
+            truncatable_texts.append(text)
+
+    # Join all truncatable parts into one block, then truncate as a whole
+    truncatable_joined = "\n\n".join(truncatable_texts)
+    marker_len = len(_TRUNCATION_MARKER)
+    available = max(max_chars - preserved_len - marker_len, 100)
+
+    if len(truncatable_joined) > available:
+        truncatable_joined = truncatable_joined[:available] + _TRUNCATION_MARKER
+
+    # Reassemble in original ordinal order
+    # Walk parts in order, emit preserved text as-is, emit truncated block once
+    result: list[str] = []
+    truncatable_emitted = False
+
+    for _, kind, text in parts:
+        if kind in _PRESERVE_KINDS:
+            result.append(text)
+        elif not truncatable_emitted:
+            result.append(truncatable_joined)
+            truncatable_emitted = True
+        # else: skip — truncatable content already emitted as one block
+
+    return "\n\n".join(result)
