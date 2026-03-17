@@ -160,3 +160,69 @@ def test_evidence_span_valid():
         reason="Key product",
     )
     assert span.section_kind == "main_body"
+
+
+# ---------------------------------------------------------------------------
+# OpenAI strict structured output compatibility
+# ---------------------------------------------------------------------------
+
+
+def _collect_object_nodes(schema: dict, path: str = "root") -> list[tuple[str, dict]]:
+    """Recursively find all object-type nodes in a JSON schema."""
+    nodes = []
+    if not isinstance(schema, dict):
+        return nodes
+    if schema.get("type") == "object" and "properties" in schema:
+        nodes.append((path, schema))
+    for name, sub in schema.get("$defs", {}).items():
+        nodes.extend(_collect_object_nodes(sub, f"$defs.{name}"))
+    for name, sub in schema.get("properties", {}).items():
+        nodes.extend(_collect_object_nodes(sub, f"{path}.{name}"))
+    if "items" in schema:
+        nodes.extend(_collect_object_nodes(schema["items"], f"{path}[items]"))
+    return nodes
+
+
+def test_summary_schema_openai_strict_compatible():
+    """Final schema for SummaryResult has additionalProperties: false on all objects."""
+    from heisenberg_agent.llm.client import ensure_additional_properties_false
+
+    schema = SummaryResult.model_json_schema()
+    ensure_additional_properties_false(schema)
+
+    for path, node in _collect_object_nodes(schema):
+        assert node.get("additionalProperties") is False, (
+            f"{path} missing additionalProperties: false"
+        )
+
+
+def test_critique_schema_openai_strict_compatible():
+    """Final schema for CritiqueResult has additionalProperties: false on all objects."""
+    from heisenberg_agent.llm.client import ensure_additional_properties_false
+
+    schema = CritiqueResult.model_json_schema()
+    ensure_additional_properties_false(schema)
+
+    for path, node in _collect_object_nodes(schema):
+        assert node.get("additionalProperties") is False, (
+            f"{path} missing additionalProperties: false"
+        )
+
+
+def test_nested_evidence_span_has_additional_properties_false():
+    """$defs.EvidenceSpan gets additionalProperties: false after postprocessing."""
+    from heisenberg_agent.llm.client import ensure_additional_properties_false
+
+    schema = SummaryResult.model_json_schema()
+    ensure_additional_properties_false(schema)
+
+    es = schema["$defs"]["EvidenceSpan"]
+    assert es["additionalProperties"] is False
+
+
+def test_raw_schema_already_has_additional_properties_via_extra_forbid():
+    """Pydantic extra='forbid' sets additionalProperties on root models,
+    but this test documents that it also propagates to $defs."""
+    raw = SummaryResult.model_json_schema()
+    assert raw.get("additionalProperties") is False
+    assert raw["$defs"]["EvidenceSpan"].get("additionalProperties") is False

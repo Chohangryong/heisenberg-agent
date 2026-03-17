@@ -7,11 +7,13 @@ These models serve two purposes:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EvidenceSpan(BaseModel):
     """A reference to a specific part of the article that supports a point."""
+
+    model_config = ConfigDict(extra="forbid")
 
     section_kind: str = Field(description="Which section this evidence comes from")
     quote_hint: str = Field(description="Short quote or paraphrase from the section")
@@ -20,6 +22,8 @@ class EvidenceSpan(BaseModel):
 
 class SummaryResult(BaseModel):
     """Structured summary of an article."""
+
+    model_config = ConfigDict(extra="forbid")
 
     core_thesis: str = Field(description="The central argument or finding")
     supporting_points: list[str] = Field(description="Key supporting arguments")
@@ -35,6 +39,8 @@ class SummaryResult(BaseModel):
 
 class CritiqueResult(BaseModel):
     """Structured critical analysis of an article."""
+
+    model_config = ConfigDict(extra="forbid")
 
     logic_gaps: list[str] = Field(description="Logical weaknesses or gaps")
     missing_views: list[str] = Field(description="Perspectives not considered")

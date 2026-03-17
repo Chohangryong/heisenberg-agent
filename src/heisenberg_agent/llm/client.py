@@ -28,6 +28,37 @@ T = TypeVar("T", bound=BaseModel)
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+def ensure_additional_properties_false(schema: dict[str, Any]) -> dict[str, Any]:
+    """Ensure all object nodes in a JSON schema have additionalProperties: false.
+
+    OpenAI structured output (strict: true) requires this on every object.
+    Pydantic's extra="forbid" handles most cases, but this provides a
+    defensive guarantee for nested $defs and any future schema additions.
+
+    Mutates and returns the same dict for convenience.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    # If this node is an object with properties, inject the flag
+    if schema.get("type") == "object" and "properties" in schema:
+        schema.setdefault("additionalProperties", False)
+
+    # Recurse into $defs
+    for _def_name, def_schema in schema.get("$defs", {}).items():
+        ensure_additional_properties_false(def_schema)
+
+    # Recurse into properties (for nested inline objects, if any)
+    for _prop_name, prop_schema in schema.get("properties", {}).items():
+        ensure_additional_properties_false(prop_schema)
+
+    # Recurse into items (for array-of-objects)
+    if "items" in schema:
+        ensure_additional_properties_false(schema["items"])
+
+    return schema
+
+
 @dataclass
 class UsageMeta:
     """Token usage and cost metadata from an LLM call."""
@@ -135,8 +166,9 @@ class LLMClient:
         max_tokens = model_config.get("max_tokens", 1800)
         temperature = model_config.get("temperature", 0.2)
 
-        # Build JSON schema from Pydantic model
+        # Build JSON schema from Pydantic model, ensure OpenAI strict compatibility
         schema = response_model.model_json_schema()
+        ensure_additional_properties_false(schema)
         schema_name = response_model.__name__
 
         start = time.monotonic()
