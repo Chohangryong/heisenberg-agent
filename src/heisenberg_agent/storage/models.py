@@ -383,11 +383,11 @@ class CollectionRun(Base):
     __tablename__ = "collection_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    trigger_type: Mapped[str] = mapped_column(Text)  # "scheduled" | "manual"
+    trigger_type: Mapped[str] = mapped_column(Text)  # "scheduled" | "manual" | "pipeline"
 
     started_at: Mapped[datetime] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    status: Mapped[str] = mapped_column(Text)  # "success" | "partial" | "failed"
+    status: Mapped[str] = mapped_column(Text)  # "running" | "success" | "partial" | "failed"
 
     articles_found: Mapped[int] = mapped_column(Integer, default=0)
     articles_collected: Mapped[int] = mapped_column(Integer, default=0)
