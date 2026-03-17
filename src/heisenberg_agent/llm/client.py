@@ -28,35 +28,44 @@ T = TypeVar("T", bound=BaseModel)
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
-def ensure_additional_properties_false(schema: dict[str, Any]) -> dict[str, Any]:
-    """Ensure all object nodes in a JSON schema have additionalProperties: false.
+def ensure_openai_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Post-process a Pydantic JSON schema for OpenAI strict structured output.
 
-    OpenAI structured output (strict: true) requires this on every object.
-    Pydantic's extra="forbid" handles most cases, but this provides a
-    defensive guarantee for nested $defs and any future schema additions.
+    OpenAI strict mode (strict: true) requires every object node to have:
+    1. additionalProperties: false
+    2. required: [every key in properties]
+
+    This function enforces both rules recursively without changing the
+    Pydantic model's own optional/required semantics — those are preserved
+    at the model_validate() layer.
 
     Mutates and returns the same dict for convenience.
     """
     if not isinstance(schema, dict):
         return schema
 
-    # If this node is an object with properties, inject the flag
+    # If this node is an object with properties, enforce strict rules
     if schema.get("type") == "object" and "properties" in schema:
         schema.setdefault("additionalProperties", False)
+        schema["required"] = list(schema["properties"].keys())
 
     # Recurse into $defs
     for _def_name, def_schema in schema.get("$defs", {}).items():
-        ensure_additional_properties_false(def_schema)
+        ensure_openai_strict_schema(def_schema)
 
     # Recurse into properties (for nested inline objects, if any)
     for _prop_name, prop_schema in schema.get("properties", {}).items():
-        ensure_additional_properties_false(prop_schema)
+        ensure_openai_strict_schema(prop_schema)
 
     # Recurse into items (for array-of-objects)
     if "items" in schema:
-        ensure_additional_properties_false(schema["items"])
+        ensure_openai_strict_schema(schema["items"])
 
     return schema
+
+
+# Backward-compatible alias
+ensure_additional_properties_false = ensure_openai_strict_schema
 
 
 @dataclass
@@ -168,7 +177,7 @@ class LLMClient:
 
         # Build JSON schema from Pydantic model, ensure OpenAI strict compatibility
         schema = response_model.model_json_schema()
-        ensure_additional_properties_false(schema)
+        ensure_openai_strict_schema(schema)
         schema_name = response_model.__name__
 
         start = time.monotonic()

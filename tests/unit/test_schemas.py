@@ -184,37 +184,43 @@ def _collect_object_nodes(schema: dict, path: str = "root") -> list[tuple[str, d
 
 
 def test_summary_schema_openai_strict_compatible():
-    """Final schema for SummaryResult has additionalProperties: false on all objects."""
-    from heisenberg_agent.llm.client import ensure_additional_properties_false
+    """Final schema for SummaryResult: additionalProperties + required on all objects."""
+    from heisenberg_agent.llm.client import ensure_openai_strict_schema
 
     schema = SummaryResult.model_json_schema()
-    ensure_additional_properties_false(schema)
+    ensure_openai_strict_schema(schema)
 
     for path, node in _collect_object_nodes(schema):
         assert node.get("additionalProperties") is False, (
             f"{path} missing additionalProperties: false"
         )
+        assert set(node["required"]) == set(node["properties"].keys()), (
+            f"{path} required does not match properties keys"
+        )
 
 
 def test_critique_schema_openai_strict_compatible():
-    """Final schema for CritiqueResult has additionalProperties: false on all objects."""
-    from heisenberg_agent.llm.client import ensure_additional_properties_false
+    """Final schema for CritiqueResult: additionalProperties + required on all objects."""
+    from heisenberg_agent.llm.client import ensure_openai_strict_schema
 
     schema = CritiqueResult.model_json_schema()
-    ensure_additional_properties_false(schema)
+    ensure_openai_strict_schema(schema)
 
     for path, node in _collect_object_nodes(schema):
         assert node.get("additionalProperties") is False, (
             f"{path} missing additionalProperties: false"
+        )
+        assert set(node["required"]) == set(node["properties"].keys()), (
+            f"{path} required does not match properties keys"
         )
 
 
 def test_nested_evidence_span_has_additional_properties_false():
     """$defs.EvidenceSpan gets additionalProperties: false after postprocessing."""
-    from heisenberg_agent.llm.client import ensure_additional_properties_false
+    from heisenberg_agent.llm.client import ensure_openai_strict_schema
 
     schema = SummaryResult.model_json_schema()
-    ensure_additional_properties_false(schema)
+    ensure_openai_strict_schema(schema)
 
     es = schema["$defs"]["EvidenceSpan"]
     assert es["additionalProperties"] is False
@@ -226,3 +232,22 @@ def test_raw_schema_already_has_additional_properties_via_extra_forbid():
     raw = SummaryResult.model_json_schema()
     assert raw.get("additionalProperties") is False
     assert raw["$defs"]["EvidenceSpan"].get("additionalProperties") is False
+
+
+def test_openai_strict_schema_adds_missing_required():
+    """evidence_spans is optional in Pydantic but must be in required for OpenAI strict.
+
+    Raw schema omits evidence_spans from required (it has default_factory).
+    Post-processing adds it.
+    """
+    from heisenberg_agent.llm.client import ensure_openai_strict_schema
+
+    raw = SummaryResult.model_json_schema()
+    assert "evidence_spans" not in raw.get("required", []), (
+        "precondition: evidence_spans should NOT be in raw required"
+    )
+
+    ensure_openai_strict_schema(raw)
+    assert "evidence_spans" in raw["required"], (
+        "evidence_spans must be in required after postprocessing"
+    )

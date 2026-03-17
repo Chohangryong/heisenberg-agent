@@ -42,9 +42,10 @@ def test_pipeline_collect_analyze_only(
     """
     _skip_unless_llm(live_settings)
 
-    # Override settings: disable sync targets
+    # Override settings: disable sync targets, minimize collect scope for smoke
     live_settings.vectordb.enabled = False
     live_settings.notion.enabled = False
+    live_settings.collector.max_articles_per_cycle = 1
 
     # Fresh session for pipeline (isolated from collector smoke)
     from sqlalchemy.orm import sessionmaker
