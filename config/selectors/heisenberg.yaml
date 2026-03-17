@@ -1,0 +1,42 @@
+# heisenberg.kr selector profile
+# Version tracked in articles.selector_profile_version
+version: "selector.v1"
+
+list_page:
+  article_card: "article.post-card"
+  title: "h2.post-card-title a"
+  url: "h2.post-card-title a"           # href attribute
+  date: "time.post-card-date"            # datetime attribute
+  category: "span.post-card-category"
+  author: "span.post-card-author"
+  tags: "span.post-card-tag"
+
+detail_page:
+  title: "h1.article-title"
+  author: "span.article-author"
+  category: "span.article-category"
+  published_at: "time.article-date"      # datetime attribute
+  content_area: "div.article-content"
+
+sections:
+  researcher_profile: "div.researcher-profile"
+  one_minute_summary: "div.one-minute-summary"
+  main_body: "div.main-body"
+  membership_gate_notice: "div.membership-gate"
+  researcher_opinion: "div.researcher-opinion"
+  qa: "div.qa-section"
+  coffeechat: "div.coffeechat-section"
+
+# Patterns for detecting gated notices
+gated_notice_patterns:
+  - "스탠다드 등급 이상"
+  - "비즈니스 등급 이상"
+  - "VIP 등급 이상"
+  - "VVIP 등급 이상"
+
+# Access tier detection: maps gate text to tier
+access_tier_map:
+  "스탠다드 등급 이상": "standard"
+  "비즈니스 등급 이상": "business"
+  "VIP 등급 이상": "vip"
+  "VVIP 등급 이상": "vvip"
