@@ -384,11 +384,5 @@ class CollectorAgent:
 
     def _polite_delay(self) -> None:
         """Random delay between requests to be polite."""
-        cfg = self._settings.collector
-        delay_cfg = getattr(cfg, "request_delay_seconds", None)
-        if delay_cfg and hasattr(delay_cfg, "get"):
-            lo = delay_cfg.get("min", 2)
-            hi = delay_cfg.get("max", 5)
-        else:
-            lo, hi = 2, 5
-        time.sleep(random.uniform(lo, hi))
+        delay = self._settings.collector.request_delay_seconds
+        time.sleep(random.uniform(delay.min, delay.max))

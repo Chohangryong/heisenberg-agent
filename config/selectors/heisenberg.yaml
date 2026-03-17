@@ -1,33 +1,41 @@
 # heisenberg.kr selector profile
 # Version tracked in articles.selector_profile_version
-version: "selector.v1"
+version: "selector.v2"
 
 list_page:
-  article_card: "article.post-card"
-  title: "h2.post-card-title a"
-  url: "h2.post-card-title a"           # href attribute
-  date: "time.post-card-date"            # datetime attribute
-  category: "span.post-card-category"
-  author: "span.post-card-author"
-  tags: "span.post-card-tag"
+  article_card: "div.loop-list > div.content"
+  title: "h3.title > a"
+  url: "h3.title > a"                         # href attribute
+  author: "p.author"                           # in .post-meta
+  category: "p.category"                       # text format: "카테고리|날짜"
+  tags: "p.tag a"
+  excerpt: "div.excerpt"
 
 detail_page:
-  title: "h1.article-title"
-  author: "span.article-author"
-  category: "span.article-category"
-  published_at: "time.article-date"      # datetime attribute
-  content_area: "div.article-content"
+  title: "div.single-header h1"
+  meta_info: "div.single-header .meta .info"   # text format: "카테고리|날짜"
+  content_area: "div.single-content"
 
 sections:
-  researcher_profile: "div.researcher-profile"
-  one_minute_summary: "div.one-minute-summary"
-  main_body: "div.main-body"
-  membership_gate_notice: "div.membership-gate"
-  researcher_opinion: "div.researcher-opinion"
-  qa: "div.qa-section"
-  coffeechat: "div.coffeechat-section"
+  researcher_profile: "div.content-profile"
+  one_minute_summary: "div.content-summary"
+  main_body: "div.content-chapter"
+  researcher_opinion: "div.content-opinion"
+  like: "div.content-like"
+  comments: "div.content-reference"
+  contact: "div.content-contact"
+  tag: "div.content-tag"
 
-# Patterns for detecting gated notices
+# Access tier is encoded in content-block class names
+# e.g. content-free, content-standard, content-business, content-vip, content-vvip
+access_tier_class_map:
+  "content-free": "free"
+  "content-standard": "standard"
+  "content-business": "business"
+  "content-vip": "vip"
+  "content-vvip": "vvip"
+
+# Patterns for detecting gated notices (in text)
 gated_notice_patterns:
   - "스탠다드 등급 이상"
   - "비즈니스 등급 이상"

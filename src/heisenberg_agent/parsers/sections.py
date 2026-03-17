@@ -1,6 +1,16 @@
 """Extract article_sections from rendered DOM.
 
 Splits the content area into typed sections based on selector profile.
+
+Section kind mapping (selector.v2):
+- content-profile → researcher_profile
+- content-summary → one_minute_summary
+- content-chapter → main_body
+- content-opinion → researcher_opinion
+- content-like, content-reference, content-contact, content-tag → auxiliary
+
+Access tier is derived from content-block class names:
+- content-free, content-standard, content-business, content-vip, content-vvip
 """
 
 from __future__ import annotations
@@ -47,6 +57,14 @@ def _extract_title(el: Tag) -> str | None:
     return None
 
 
+def _tier_from_classes(classes: list[str], class_map: dict[str, str]) -> str:
+    """Extract access tier from element's CSS classes."""
+    for cls in classes:
+        if cls in class_map:
+            return class_map[cls]
+    return "unknown"
+
+
 def extract_sections(
     html: str,
     selectors: dict[str, Any],
@@ -64,6 +82,7 @@ def extract_sections(
     section_selectors = selectors["sections"]
     gated_patterns = selectors.get("gated_notice_patterns", [])
     tier_map = selectors.get("access_tier_map", {})
+    tier_class_map = selectors.get("access_tier_class_map", {})
 
     # Determine content area
     detail_sel = selectors.get("detail_page", {})
@@ -76,39 +95,48 @@ def extract_sections(
     sections: list[SectionData] = []
     ordinal = 0
 
-    # Walk through known section kinds in selector order
+    # Walk through known section kinds in selector order.
+    # A single selector may match multiple elements (e.g. content-reference × 2).
     for kind, css_selector in section_selectors.items():
-        el = root.select_one(css_selector)
-        if el is None:
+        elements = root.select(css_selector)
+        if not elements:
             continue
 
-        text = el.get_text(separator="\n", strip=True)
-        html_str = str(el)
+        for el in elements:
+            text = el.get_text(separator="\n", strip=True)
+            html_str = str(el)
 
-        if not text:
-            continue
+            if not text:
+                continue
 
-        gated = _is_gated_notice(text, gated_patterns)
-        tier = _detect_access_tier(text, tier_map) if gated else _infer_tier(kind)
+            gated = _is_gated_notice(text, gated_patterns)
+            classes = el.get("class", [])
 
-        ordinal += 1
-        sections.append(SectionData(
-            ordinal=ordinal,
-            section_kind=kind,
-            section_title=_extract_title(el),
-            access_tier=tier,
-            is_gated_notice=gated,
-            body_text=text,
-            body_html=html_str,
-            content_hash=content_hash(text),
-            selector_used=css_selector,
-        ))
+            if gated:
+                tier = _detect_access_tier(text, tier_map)
+            elif tier_class_map:
+                tier = _tier_from_classes(classes, tier_class_map)
+            else:
+                tier = _infer_tier(kind)
+
+            ordinal += 1
+            sections.append(SectionData(
+                ordinal=ordinal,
+                section_kind=kind,
+                section_title=_extract_title(el),
+                access_tier=tier,
+                is_gated_notice=gated,
+                body_text=text,
+                body_html=html_str,
+                content_hash=content_hash(text),
+                selector_used=css_selector,
+            ))
 
     return sections
 
 
 def _infer_tier(kind: str) -> str:
-    """Infer default access tier from section kind."""
+    """Infer default access tier from section kind (fallback)."""
     public_kinds = {"researcher_profile", "one_minute_summary", "qa", "coffeechat"}
     if kind in public_kinds:
         return "public"
@@ -132,7 +160,7 @@ def build_body_text(sections: list[SectionData]) -> str:
 _ANALYSIS_INCLUDE_KINDS = {"one_minute_summary", "main_body", "researcher_opinion"}
 
 # Section kinds excluded from analysis input
-# researcher_profile, membership_gate_notice, qa, coffeechat, misc
+# researcher_profile, like, comments, contact, tag, misc
 
 _TRUNCATION_MARKER = "\n\n[본문이 잘렸습니다]"
 

@@ -20,6 +20,11 @@ class DatabaseSettings(BaseSettings):
     url: str = "sqlite:///data/db/heisenberg.db"
 
 
+class RequestDelaySettings(BaseSettings):
+    min: int = 2
+    max: int = 5
+
+
 class CollectorSettings(BaseSettings):
     base_url: str = "https://heisenberg.kr"
     login_url: str = "https://heisenberg.kr/login/"
@@ -29,6 +34,7 @@ class CollectorSettings(BaseSettings):
     max_pages_to_scan: int = 3
     max_articles_per_cycle: int = 20
     duplicate_safety_window_days: int = 7
+    request_delay_seconds: RequestDelaySettings = Field(default_factory=RequestDelaySettings)
 
 
 class AnalysisSettings(BaseSettings):
@@ -51,6 +57,9 @@ class NotionSettings(BaseSettings):
     api_version: str = "2022-06-28"
     sync_mode: str = "one_way"
     dry_run: bool = False
+    obey_retry_after: bool = True
+    max_blocks_per_payload: int = 200
+    max_payload_bytes: int = 200000
 
 
 class LoggingSettings(BaseSettings):

@@ -127,10 +127,10 @@ class PlaywrightAdapter:
         assert self._page is not None
         try:
             self._page.goto(login_url, wait_until="domcontentloaded")
-            # Fill login form — field names based on site observation (§2.1)
-            self._page.fill('input[name="log"], input[type="email"]', username)
-            self._page.fill('input[name="pwd"], input[type="password"]', password)
-            self._page.click('button[type="submit"], input[type="submit"]')
+            # Ultimate Member plugin form — use data-key for form_id independence
+            self._page.fill('input[data-key="username"]', username)
+            self._page.fill('input[data-key="user_password"]', password)
+            self._page.click('input#um-submit-btn')
             self._page.wait_for_load_state("domcontentloaded")
             return True
         except Exception as e:

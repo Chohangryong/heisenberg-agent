@@ -61,8 +61,8 @@ class FakeAdapter:
 # ---------------------------------------------------------------------------
 
 class _DelaySettings:
-    def get(self, key, default=0):
-        return 0
+    min = 0
+    max = 0
 
 
 class _CollectorSettings:
@@ -118,7 +118,7 @@ def test_full_collect_one_article(db_session: Session):
 
     # Sections created
     sections = db_session.query(ArticleSection).filter_by(article_id=gtc.id).all()
-    assert len(sections) == 7
+    assert len(sections) == 10
     kinds = {s.section_kind for s in sections}
     assert "main_body" in kinds
     assert "one_minute_summary" in kinds

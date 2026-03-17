@@ -26,9 +26,10 @@ def _sections() -> list[SectionData]:
 
 
 def test_extracts_expected_section_count():
-    """Fixture has 7 sections: profile, summary, body, gate, opinion, qa, coffeechat."""
+    """Fixture has 10 sections: profile, summary, chapter, opinion, like,
+    comments, sources, contact_vip, contact_vvip, tag."""
     sections = _sections()
-    assert len(sections) == 7
+    assert len(sections) == 10
 
 
 def test_section_kinds():
@@ -37,10 +38,11 @@ def test_section_kinds():
     assert "researcher_profile" in kinds
     assert "one_minute_summary" in kinds
     assert "main_body" in kinds
-    assert "membership_gate_notice" in kinds
     assert "researcher_opinion" in kinds
-    assert "qa" in kinds
-    assert "coffeechat" in kinds
+    assert "like" in kinds
+    assert "comments" in kinds  # content-reference (x2)
+    assert "contact" in kinds   # content-contact (x2)
+    assert "tag" in kinds
 
 
 def test_ordinals_are_sequential():
@@ -51,9 +53,9 @@ def test_ordinals_are_sequential():
 
 def test_gated_notice_detected():
     sections = _sections()
-    gate = [s for s in sections if s.section_kind == "membership_gate_notice"][0]
-    assert gate.is_gated_notice is True
-    assert gate.access_tier == "standard"
+    opinion = [s for s in sections if s.section_kind == "researcher_opinion"][0]
+    assert opinion.is_gated_notice is True
+    assert opinion.access_tier == "business"
 
 
 def test_non_gated_sections():
@@ -99,12 +101,13 @@ def test_selector_used_recorded():
         assert s.selector_used, f"{s.section_kind} missing selector_used"
 
 
-def test_access_tier_defaults():
+def test_access_tier_from_classes():
+    """Access tier is derived from CSS class names in v2."""
     sections = _sections()
     profile = [s for s in sections if s.section_kind == "researcher_profile"][0]
-    assert profile.access_tier == "public"
+    assert profile.access_tier == "free"
     body = [s for s in sections if s.section_kind == "main_body"][0]
-    assert body.access_tier == "logged_in"
+    assert body.access_tier == "standard"
 
 
 def test_build_body_text():
@@ -113,6 +116,6 @@ def test_build_body_text():
     assert "Blackwell Ultra" in body_text
     assert "추론 효율 3배" in body_text
     assert "양산 일정" in body_text
-    # Excludes researcher_profile, gate, qa, coffeechat
+    # Excludes researcher_profile, like, comments, contact, tag
     assert "김연구 — AI/반도체" not in body_text
     assert "커피챗" not in body_text

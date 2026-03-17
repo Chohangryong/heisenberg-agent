@@ -35,6 +35,19 @@ class ListItem:
     tags: list[str] = field(default_factory=list)
 
 
+def _parse_category_date(text: str) -> tuple[str | None, str | None]:
+    """Parse 'Category|Date' text into (category, date).
+
+    Examples:
+        'AI|2026.03.17' → ('AI', '2026.03.17')
+        'AI' → ('AI', None)
+    """
+    if "|" in text:
+        parts = text.split("|", 1)
+        return parts[0].strip() or None, parts[1].strip() or None
+    return text.strip() or None, None
+
+
 def parse_list_page(html: str, selectors: dict[str, Any]) -> list[ListItem]:
     """Extract article cards from a list page."""
     soup = BeautifulSoup(html, "html.parser")
@@ -50,19 +63,28 @@ def parse_list_page(html: str, selectors: dict[str, Any]) -> list[ListItem]:
         title_text = title_el.get_text(strip=True)
         slug = link.strip("/").split("/")[-1] if link else ""
 
-        date_el = card.select_one(sel["date"])
-        cat_el = card.select_one(sel["category"])
+        # author from p.author
         author_el = card.select_one(sel["author"])
+        author = author_el.get_text(strip=True) if author_el else None
+
+        # category and date from p.category (format: "Category|Date")
+        cat_el = card.select_one(sel["category"])
+        category, date = None, None
+        if cat_el:
+            category, date = _parse_category_date(cat_el.get_text(strip=True))
+
+        # tags from p.tag a
         tag_els = card.select(sel["tags"])
+        tags = [t.get_text(strip=True).lstrip("#") for t in tag_els]
 
         items.append(ListItem(
             slug=slug,
             url=str(link),
             title=title_text,
-            date=date_el.get("datetime") if date_el else None,
-            category=cat_el.get_text(strip=True) if cat_el else None,
-            author=author_el.get_text(strip=True) if author_el else None,
-            tags=[t.get_text(strip=True) for t in tag_els],
+            date=date,
+            category=category,
+            author=author,
+            tags=tags,
         ))
 
     return items
@@ -88,9 +110,12 @@ def parse_detail_page(html: str, selectors: dict[str, Any]) -> DetailResult:
     sel = selectors["detail_page"]
 
     title_el = soup.select_one(sel["title"])
-    author_el = soup.select_one(sel["author"])
-    cat_el = soup.select_one(sel["category"])
-    date_el = soup.select_one(sel["published_at"])
+
+    # Category and date from meta_info (format: "Category|Date")
+    meta_info_el = soup.select_one(sel.get("meta_info", ""))
+    category, published_at = None, None
+    if meta_info_el:
+        category, published_at = _parse_category_date(meta_info_el.get_text(strip=True))
 
     content_area = soup.select_one(sel["content_area"])
     image_urls: list[str] = []
@@ -102,9 +127,9 @@ def parse_detail_page(html: str, selectors: dict[str, Any]) -> DetailResult:
 
     return DetailResult(
         title=title_el.get_text(strip=True) if title_el else "",
-        author=author_el.get_text(strip=True) if author_el else None,
-        category=cat_el.get_text(strip=True) if cat_el else None,
-        published_at=date_el.get("datetime") if date_el else None,
+        author=None,  # author is not in detail page header; available via researcher_profile section
+        category=category,
+        published_at=published_at,
         rendered_html=html,
         image_urls=image_urls,
     )

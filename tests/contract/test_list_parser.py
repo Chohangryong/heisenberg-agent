@@ -26,7 +26,7 @@ def test_first_card_fields():
     assert first.slug == "gtc2026"
     assert first.url == "/gtc2026/"
     assert first.title == "GTC 2026 핵심 정리"
-    assert first.date == "2026-03-15"
+    assert first.date == "2026.03.15"
     assert first.category == "AI"
     assert first.author == "김연구"
     assert first.tags == ["GPU", "엔비디아"]

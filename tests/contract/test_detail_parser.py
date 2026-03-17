@@ -20,9 +20,10 @@ def test_extracts_title():
     assert result.title == "GTC 2026 핵심 정리"
 
 
-def test_extracts_author():
+def test_author_is_none():
+    """Author is not in detail page header; available via researcher_profile section."""
     result = parse_detail_page(_html(), _selectors())
-    assert result.author == "김연구"
+    assert result.author is None
 
 
 def test_extracts_category():
@@ -32,7 +33,7 @@ def test_extracts_category():
 
 def test_extracts_published_at():
     result = parse_detail_page(_html(), _selectors())
-    assert result.published_at == "2026-03-15T09:00:00+09:00"
+    assert result.published_at == "2026.03.15"
 
 
 def test_extracts_image_urls():
@@ -44,4 +45,4 @@ def test_extracts_image_urls():
 
 def test_preserves_rendered_html():
     result = parse_detail_page(_html(), _selectors())
-    assert "article-content" in result.rendered_html
+    assert "single-content" in result.rendered_html
