@@ -37,7 +37,10 @@ class FakeChromaAdapter:
     def upsert(self, doc_id: str, document: str, metadata: dict) -> str:
         if self._should_fail:
             from heisenberg_agent.adapters.chroma_adapter import ChromaSyncError
-            raise ChromaSyncError("Fake chroma failure")
+            raise ChromaSyncError(
+                "Fake chroma failure",
+                error_type="io_error", retryable=True,
+            )
         self.upsert_calls.append({"doc_id": doc_id, "document": document, "metadata": metadata})
         return doc_id
 
@@ -57,14 +60,20 @@ class FakeNotionAdapter:
             raise RetryAfterError("Rate limited", retry_after=120)
         if self._should_fail:
             from heisenberg_agent.adapters.notion_adapter import NotionSyncError
-            raise NotionSyncError("Fake notion failure")
+            raise NotionSyncError(
+                "Fake notion failure",
+                error_type="server_error", retryable=True,
+            )
         self.create_calls.append({"properties": properties, "children": children})
         return "notion-page-id-123"
 
     def update_page(self, page_id: str, properties: dict, children: list) -> str:
         if self._should_fail:
             from heisenberg_agent.adapters.notion_adapter import NotionSyncError
-            raise NotionSyncError("Fake notion failure")
+            raise NotionSyncError(
+                "Fake notion failure",
+                error_type="server_error", retryable=True,
+            )
         self.update_calls.append({"page_id": page_id, "properties": properties})
         return page_id
 
@@ -407,3 +416,75 @@ def test_resync_after_reanalysis(db_session: Session):
     assert job.status == "succeeded"
     assert job.payload_hash != old_hash
     assert job.synced_analysis_id == new_run.id
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker — Notion 429
+# ---------------------------------------------------------------------------
+
+
+def test_notion_429_circuit_breaker(db_session: Session):
+    """First notion job hits 429 → remaining jobs deferred, not failed."""
+    # Create 3 articles so we get 3 notion jobs
+    articles = [
+        _create_analyzed_article(db_session, slug=f"cb-{i}")
+        for i in range(3)
+    ]
+
+    notion = FakeNotionAdapter(fail_429=True)
+    agent = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion,
+        settings=FakeSettings(),
+    )
+    stats = agent.run()
+
+    notion_jobs = db_session.query(SyncJob).filter_by(target="notion").all()
+
+    # Exactly 1 job should be failed (the one that hit 429)
+    failed_jobs = [j for j in notion_jobs if j.status == "failed"]
+    assert len(failed_jobs) == 1
+    assert failed_jobs[0].attempt_count == 1
+
+    # Remaining jobs should be pending with next_retry_at set
+    deferred_jobs = [j for j in notion_jobs if j.status == "pending" and j.next_retry_at is not None]
+    assert len(deferred_jobs) == 2
+    for dj in deferred_jobs:
+        assert dj.attempt_count == 0  # not incremented
+
+    assert stats["deferred"] == 2
+    assert stats["failed"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Failed event payload
+# ---------------------------------------------------------------------------
+
+
+def test_failed_event_contains_structured_payload(db_session: Session):
+    """Failed sync job produces ArticleEvent with structured payload_json."""
+    article = _create_analyzed_article(db_session)
+
+    agent = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(should_fail=True),
+        notion_adapter=FakeNotionAdapter(),
+        settings=FakeSettings(),
+    )
+    agent.run()
+
+    event = db_session.query(ArticleEvent).filter_by(
+        article_id=article.id,
+        event_type="sync.vector.failed",
+    ).first()
+    assert event is not None
+    assert event.payload_json is not None
+
+    payload = json.loads(event.payload_json)
+    assert payload["target"] == "vector"
+    assert "error_type" in payload
+    assert "retryable" in payload
+    assert "attempt_count" in payload
+    assert "error_code" in payload
+    assert "error_message" in payload

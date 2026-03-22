@@ -10,6 +10,7 @@ Fallback for non-RETURNING engines: execute UPDATE, check rowcount == 1.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -26,6 +27,21 @@ STALE_LOCK_MINUTES = 10
 MAX_VECTOR_ATTEMPTS = 5
 MAX_NOTION_ATTEMPTS = 10
 
+# Maximum length for error_message stored in ArticleEvent.payload_json.
+# Full messages go to structlog only.
+_EVENT_ERROR_MSG_LIMIT = 200
+
+
+def _truncate(msg: str, limit: int = _EVENT_ERROR_MSG_LIMIT) -> tuple[str, bool]:
+    """Truncate a message and indicate whether it was truncated."""
+    if len(msg) <= limit:
+        return msg, False
+    return msg[:limit] + "...(truncated)", True
+
+
+def _max_attempts_for(target: str) -> int:
+    return MAX_VECTOR_ATTEMPTS if target == "vector" else MAX_NOTION_ATTEMPTS
+
 
 # ---------------------------------------------------------------------------
 # Ensure sync jobs exist
@@ -37,23 +53,28 @@ def ensure_sync_jobs(
     article: Article,
     enabled_targets: list[str],
     embedding_version: str,
+    *,
+    current_vector_hash: str | None = None,
+    current_notion_hash: str | None = None,
 ) -> None:
     """Ensure sync_jobs exist for each enabled target.
 
     Creates pending jobs if missing.
-    Re-arms failed jobs if payload would change (new analysis or embedding version).
-    Resets succeeded jobs to pending if current_analysis_id changed.
+    Re-arms failed/exhausted jobs when payload would change.
+    Resets succeeded jobs to pending when payload would change.
 
-    Change detection is based on current_analysis_id vs synced_analysis_id.
-    Payload changes WITHOUT a current_analysis_id change (e.g. annotation edits,
-    tag changes) are not detected here — that is outside Phase 3 scope.
-    Future phases may add payload_hash pre-comparison or annotation change tracking.
+    Re-arm conditions (target-specific):
+      notion:  current_analysis_id changed OR payload_hash changed
+      vector:  current_analysis_id changed OR embedding_version changed
+               OR payload_hash changed
 
     Args:
         session: DB session.
         article: Article with current_analysis_id set.
         enabled_targets: ["vector", "notion"] based on settings.
         embedding_version: Current embedding version from settings.
+        current_vector_hash: Pre-computed hash from build_vector_payload.
+        current_notion_hash: Pre-computed hash from build_notion_payload.
     """
     for target in enabled_targets:
         job = _find_job(session, article.id, target)
@@ -66,22 +87,49 @@ def ensure_sync_jobs(
             ))
             continue
 
-        if job.status == "failed":
-            # Re-arm if analysis changed or embedding changed
-            if article.current_analysis_id != job.synced_analysis_id:
-                _rearm(job)
-            elif target == "vector" and job.embedding_version != embedding_version:
+        current_hash = (
+            current_vector_hash if target == "vector" else current_notion_hash
+        )
+        should_rearm = _should_rearm(
+            job, article, target, embedding_version, current_hash,
+        )
+
+        if job.status in ("failed", "exhausted"):
+            if should_rearm:
                 _rearm(job)
 
         elif job.status == "succeeded":
-            # Re-arm if the article was re-analyzed (new payload expected)
-            if article.current_analysis_id != job.synced_analysis_id:
+            if should_rearm:
                 job.status = "pending"
-            elif target == "vector" and job.embedding_version != embedding_version:
-                job.status = "pending"
-            # else: same analysis + same embedding → stay succeeded (noop)
 
     session.commit()
+
+
+def _should_rearm(
+    job: SyncJob,
+    article: Article,
+    target: str,
+    embedding_version: str,
+    current_hash: str | None,
+) -> bool:
+    """Determine whether a job should be re-armed.
+
+    Target-specific rules:
+      notion:  analysis_id changed OR payload_hash changed
+      vector:  analysis_id changed OR embedding_version changed
+               OR payload_hash changed
+    """
+    if article.current_analysis_id != job.synced_analysis_id:
+        return True
+
+    if current_hash is not None:
+        if job.payload_hash is None or current_hash != job.payload_hash:
+            return True
+
+    if target == "vector" and job.embedding_version != embedding_version:
+        return True
+
+    return False
 
 
 def _rearm(job: SyncJob) -> None:
@@ -105,7 +153,7 @@ def find_pending_jobs(
 
     Returns jobs where:
     - target matches
-    - status in (pending, failed)
+    - status in (pending, failed)  — exhausted jobs are excluded
     - next_retry_at is null or <= now
     - not locked (or lock is stale)
     - attempt_count < max_attempts
@@ -114,7 +162,7 @@ def find_pending_jobs(
     stale_cutoff = now - timedelta(minutes=STALE_LOCK_MINUTES)
 
     if max_attempts is None:
-        max_attempts = MAX_VECTOR_ATTEMPTS if target == "vector" else MAX_NOTION_ATTEMPTS
+        max_attempts = _max_attempts_for(target)
 
     stmt = (
         select(SyncJob)
@@ -183,7 +231,13 @@ def mark_succeeded(
     embedding_version: str | None = None,
     synced_analysis_id: int | None = None,
 ) -> None:
-    """Mark job as succeeded after sync."""
+    """Mark job as succeeded after sync.
+
+    payload_hash is updated ONLY here — never on partial success.
+    This ensures that any incomplete sync (e.g. body written but properties
+    update failed) will be retried on the next run because the stored
+    payload_hash won't match the new hash.
+    """
     job.status = "succeeded"
     job.payload_hash = payload_hash
     job.external_id = external_id
@@ -210,14 +264,65 @@ def mark_failed(
     *,
     error_code: str,
     error_message: str,
+    error_type: str = "unknown",
+    retryable: bool = False,
     retry_after_seconds: int | None = None,
 ) -> None:
-    """Mark job as failed with retry scheduling."""
-    job.status = "failed"
+    """Mark job as failed with retry scheduling.
+
+    If attempt_count reaches max_attempts, transitions to 'exhausted'
+    instead of 'failed'. Exhausted jobs are excluded from find_pending_jobs
+    but can be re-armed by ensure_sync_jobs when payload changes.
+    """
     job.attempt_count = (job.attempt_count or 0) + 1
     job.last_error_code = error_code
     job.last_error_message = error_message[:500]
     job.locked_at = None
+
+    max_attempts = _max_attempts_for(job.target)
+
+    # Exhausted check
+    if job.attempt_count >= max_attempts:
+        job.status = "exhausted"
+        job.next_retry_at = None
+
+        msg_trunc, truncated = _truncate(error_message)
+        event_payload: dict[str, Any] = {
+            "target": job.target,
+            "error_type": error_type,
+            "error_code": error_code,
+            "last_error_retryable": retryable,
+            "exhausted": True,
+            "attempt_count": job.attempt_count,
+            "error_message": msg_trunc,
+        }
+        if truncated:
+            event_payload["error_message_truncated"] = True
+
+        session.add(ArticleEvent(
+            article_id=job.article_id,
+            stage="sync",
+            event_type=f"sync.{job.target}.exhausted",
+            payload_json=json.dumps(event_payload, ensure_ascii=False),
+        ))
+
+        logger.error(
+            "sync.job_exhausted",
+            target=job.target,
+            error_type=error_type,
+            error_code=error_code,
+            last_error_retryable=retryable,
+            exhausted=True,
+            attempt_count=job.attempt_count,
+            max_attempts=max_attempts,
+            article_id=job.article_id,
+            job_id=job.id,
+        )
+        session.commit()
+        return
+
+    # Normal failure
+    job.status = "failed"
 
     if retry_after_seconds is not None:
         job.next_retry_at = now_utc() + timedelta(seconds=retry_after_seconds)
@@ -226,11 +331,39 @@ def mark_failed(
         backoff = min(300 * (2 ** (job.attempt_count - 1)), 3600)
         job.next_retry_at = now_utc() + timedelta(seconds=backoff)
 
+    msg_trunc, truncated = _truncate(error_message)
+    event_payload = {
+        "target": job.target,
+        "error_type": error_type,
+        "error_code": error_code,
+        "retryable": retryable,
+        "attempt_count": job.attempt_count,
+        "error_message": msg_trunc,
+    }
+    if truncated:
+        event_payload["error_message_truncated"] = True
+
     session.add(ArticleEvent(
         article_id=job.article_id,
         stage="sync",
         event_type=f"sync.{job.target}.failed",
+        payload_json=json.dumps(event_payload, ensure_ascii=False),
     ))
+    session.commit()
+
+
+def defer_for_rate_limit(
+    session: Session,
+    job: SyncJob,
+    retry_after_seconds: int,
+) -> None:
+    """Defer a job due to target-level rate limit without incrementing attempt_count.
+
+    Used by the circuit breaker: when one job hits 429, remaining jobs in
+    the same target are deferred without penalty since no API call was made.
+    """
+    job.next_retry_at = now_utc() + timedelta(seconds=retry_after_seconds)
+    job.locked_at = None
     session.commit()
 
 

@@ -19,17 +19,83 @@ class NotionClient(Protocol):
     def pages_update(self, page_id: str, **kwargs: Any) -> dict[str, Any]: ...
 
 
+# ---------------------------------------------------------------------------
+# Error types
+# ---------------------------------------------------------------------------
+
+
+def classify_notion_error(error: Exception) -> tuple[str, bool, int | None]:
+    """Classify a Notion error into (error_type, retryable, retry_after).
+
+    Uses status attribute from notion-sdk-py APIResponseError when available,
+    falls back to string matching.
+
+    Returns:
+        (error_type, retryable, retry_after_seconds_or_None)
+    """
+    status = getattr(error, "status", None)
+    retry_after = _extract_retry_after(error)
+
+    if status is not None:
+        if status == 429:
+            return "rate_limit", True, retry_after or 60
+        if status == 409:
+            return "conflict", True, None
+        if status in (500, 502, 503, 504):
+            return "server_error", True, None
+        if status in (400, 401, 403, 404):
+            return "client_error", False, None
+        return "unknown", False, None
+
+    # Fallback: string matching
+    error_str = str(error)
+    error_lower = error_str.lower()
+    if "429" in error_str or "rate" in error_lower:
+        return "rate_limit", True, retry_after or 60
+    if "timeout" in error_lower:
+        return "server_error", True, None
+    if "500" in error_str or "502" in error_str or "503" in error_str:
+        return "server_error", True, None
+
+    return "unknown", False, None
+
+
+def _extract_retry_after(error: Exception) -> int | None:
+    """Try to extract Retry-After from error. None if unavailable."""
+    retry = getattr(error, "retry_after", None)
+    if retry and isinstance(retry, (int, float)):
+        return int(retry)
+    return None
+
+
 class NotionSyncError(Exception):
     """Raised when Notion API call fails."""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str = "unknown",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.retryable = retryable
 
 
 class RetryAfterError(NotionSyncError):
     """Raised on 429 rate limit. Includes retry_after seconds."""
 
     def __init__(self, message: str, retry_after: int = 60) -> None:
-        super().__init__(message)
+        super().__init__(
+            message, error_type="rate_limit", retryable=True,
+        )
         self.retry_after = retry_after
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
 
 
 class NotionAdapter:
@@ -81,7 +147,7 @@ class NotionAdapter:
             logger.info("notion.page_created", page_id=page_id)
             return page_id
         except Exception as e:
-            self._handle_error(e)
+            self._raise_classified(e)
 
     def update_page(
         self,
@@ -103,29 +169,23 @@ class NotionAdapter:
             logger.info("notion.page_updated", page_id=page_id)
             return page_id
         except Exception as e:
-            self._handle_error(e)
+            self._raise_classified(e)
 
-    def _handle_error(self, error: Exception) -> None:
-        """Classify Notion errors into retry-able vs terminal."""
-        error_str = str(error)
+    def _raise_classified(self, error: Exception) -> None:
+        """Classify error and raise the appropriate NotionSyncError subtype."""
+        error_type, retryable, retry_after = classify_notion_error(error)
 
-        # Check for rate limit (429)
-        if "429" in error_str or "rate" in error_str.lower():
-            retry_after = self._extract_retry_after(error)
+        if error_type == "rate_limit":
             raise RetryAfterError(
-                f"Notion rate limited: {error}", retry_after=retry_after,
+                f"Notion rate limited: {error}",
+                retry_after=retry_after or 60,
             ) from error
 
-        # All other errors
-        raise NotionSyncError(f"Notion API error: {error}") from error
-
-    def _extract_retry_after(self, error: Exception) -> int:
-        """Try to extract Retry-After from error. Default 60s."""
-        # notion-sdk-py includes retry_after in some error types
-        retry = getattr(error, "retry_after", None)
-        if retry and isinstance(retry, (int, float)):
-            return int(retry)
-        return 60
+        raise NotionSyncError(
+            f"Notion API error: {error}",
+            error_type=error_type,
+            retryable=retryable,
+        ) from error
 
     def _build_notion_properties(self, props: dict[str, Any]) -> dict[str, Any]:
         """Convert flat properties dict to Notion API property format.
