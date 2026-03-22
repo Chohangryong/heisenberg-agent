@@ -8,6 +8,16 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _project_root() -> Path:
+    """Resolve project root directory.
+
+    Assumes editable install (pip install -e .) with this file at:
+      <project_root>/src/heisenberg_agent/settings.py
+    If the repo layout changes, update the parent count accordingly.
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     """Load a YAML file, return empty dict if missing."""
     if not path.exists():
@@ -114,11 +124,21 @@ class AppSettings(BaseSettings):
 def load_settings(
     config_path: str = "config/settings.yaml",
 ) -> AppSettings:
-    """Load settings by merging YAML config with .env overrides."""
-    yaml_data = _load_yaml(Path(config_path))
+    """Load settings by merging YAML config with .env overrides.
+
+    Resolves config_path and .env relative to the project root
+    (determined by _project_root()), so the process can be started
+    from any working directory — including launchd.
+    """
+    root = _project_root()
+    yaml_data = _load_yaml(root / config_path)
 
     # Flatten 'app' level into root if present
     app_data = yaml_data.pop("app", {})
     merged = {**app_data, **yaml_data}
 
+    # Resolve .env from project root (absolute path, CWD-independent)
+    env_path = root / ".env"
+    if env_path.exists():
+        return AppSettings(_env_file=str(env_path), **merged)
     return AppSettings(**merged)
