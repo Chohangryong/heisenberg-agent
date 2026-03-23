@@ -1,0 +1,76 @@
+# Notion Data Source property 스키마 — 단일 정의 (SSOT).
+#
+# _build_notion_properties는 이 파일을 런타임에 로드하여
+# payload key → Notion property name/type 변환에 사용한다.
+# adapter에 property name을 하드코딩하지 않는다.
+#
+# key:       build_notion_payload의 properties dict key
+# name:      Notion Data Source에 실제 생성된 property 이름 (정확히 일치해야 함)
+# type:      Notion property type
+# nullable:  true이면 값이 None일 때 property 생략 (Notion 기본값 사용)
+#            false이면 값이 None일 때 빈 문자열/빈 리스트로 fallback
+
+properties:
+  title:
+    name: "제목"
+    type: title
+    nullable: false
+
+  url:
+    name: "URL"
+    type: url
+    nullable: false
+
+  published_at:
+    name: "발행일"
+    type: date
+    nullable: true
+
+  importance:
+    name: "중요도"
+    type: select
+    nullable: false
+    options:
+      - high
+      - medium
+      - low
+
+  category:
+    name: "카테고리"
+    type: select
+    nullable: true
+
+  keywords:
+    name: "키워드"
+    type: multi_select
+    nullable: false
+
+  author:
+    name: "작성자"
+    type: rich_text
+    nullable: true
+
+  tags:
+    name: "태그"
+    type: multi_select
+    nullable: false
+
+  is_read:
+    name: "읽음"
+    type: checkbox
+    nullable: false
+
+  starred:
+    name: "즐겨찾기"
+    type: checkbox
+    nullable: false
+
+  llm_model:
+    name: "분석모델"
+    type: rich_text
+    nullable: true
+
+  analysis_version:
+    name: "분석버전"
+    type: rich_text
+    nullable: true

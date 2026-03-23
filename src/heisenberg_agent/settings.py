@@ -103,7 +103,8 @@ class AppSettings(BaseSettings):
     heisenberg_username_or_email: str = ""
     heisenberg_password: str = ""
     notion_api_key: str = ""
-    notion_parent_page_id: str = ""
+    notion_data_source_id: str = ""
+    notion_parent_page_id: str = ""  # 선택. DB/data source 자동 생성 시에만 사용
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     log_level: str = "INFO"

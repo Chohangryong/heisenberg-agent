@@ -1,15 +1,26 @@
 """Notion API adapter — thin wrapper with version pin.
 
+Uses config/notion_schema.yaml as the single source of truth for
+property name ↔ type mapping. No property names are hard-coded.
+
 Test boundary: inject a fake client to eliminate live Notion API dependency.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
+
+import yaml
 
 from heisenberg_agent.utils.logger import get_logger
 
 logger = get_logger()
+
+# Notion API limits
+_BLOCKS_PER_APPEND = 100  # Max children per blocks.children.append call
+_BLOCKS_LIST_PAGE_SIZE = 100  # blocks.children.list pagination size
+_TEXT_CHUNK_SIZE = 2000  # Max chars per rich_text block
 
 
 class NotionClient(Protocol):
@@ -17,6 +28,20 @@ class NotionClient(Protocol):
 
     def pages_create(self, **kwargs: Any) -> dict[str, Any]: ...
     def pages_update(self, page_id: str, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class BlocksChildrenAPI(Protocol):
+    """Interface for blocks.children operations (body replace)."""
+
+    def list(self, block_id: str, **kwargs: Any) -> dict[str, Any]: ...
+    def append(self, block_id: str, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class BlocksAPI(Protocol):
+    """Interface for blocks operations (delete)."""
+
+    children: BlocksChildrenAPI
+    def delete(self, block_id: str) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -94,27 +119,67 @@ class RetryAfterError(NotionSyncError):
 
 
 # ---------------------------------------------------------------------------
+# Schema loader
+# ---------------------------------------------------------------------------
+
+
+def _default_schema_path() -> Path:
+    """Resolve config/notion_schema.yaml relative to project root."""
+    return Path(__file__).resolve().parent.parent.parent.parent / "config" / "notion_schema.yaml"
+
+
+def load_notion_schema(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load notion_schema.yaml and return the properties mapping.
+
+    Returns:
+        {payload_key: {"name": str, "type": str, "nullable": bool, ...}}
+    """
+    schema_path = path or _default_schema_path()
+    with open(schema_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("properties", {})
+
+
+# ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
 
 
 class NotionAdapter:
-    """Wraps Notion API operations with version pin."""
+    """Wraps Notion API operations with version pin.
+
+    Property name mapping is loaded from config/notion_schema.yaml (SSOT).
+    No property names are hard-coded in this adapter.
+    """
 
     def __init__(
         self,
         client: NotionClient,
-        parent_page_id: str,
+        data_source_id: str,
         api_version: str = "2022-06-28",
+        schema: dict[str, dict[str, Any]] | None = None,
+        blocks_api: BlocksAPI | None = None,
     ) -> None:
         self._client = client
-        self._parent_page_id = parent_page_id
+        self._data_source_id = data_source_id
         self._api_version = api_version
+        self._schema = schema or load_notion_schema()
+        self._blocks = blocks_api
 
     @classmethod
     def from_settings(cls, settings: Any) -> "NotionAdapter":
-        """Create adapter from settings, initializing real Notion client."""
+        """Create adapter from settings, initializing real Notion client.
+
+        Requires settings.notion_data_source_id to be non-empty
+        when notion.enabled is True.
+        """
         from notion_client import Client
+
+        if not settings.notion_data_source_id:
+            raise ValueError(
+                "NOTION_DATA_SOURCE_ID is required when notion.enabled=True. "
+                "Set it in .env or disable notion sync (NOTION__ENABLED=false)."
+            )
 
         client = Client(
             auth=settings.notion_api_key,
@@ -122,8 +187,9 @@ class NotionAdapter:
         )
         return cls(
             client=client,
-            parent_page_id=settings.notion_parent_page_id,
+            data_source_id=settings.notion_data_source_id,
             api_version=settings.notion.api_version,
+            blocks_api=client.blocks,
         )
 
     def create_page(
@@ -131,7 +197,9 @@ class NotionAdapter:
         properties: dict[str, Any],
         children: list[dict[str, Any]],
     ) -> str:
-        """Create a Notion page. Returns the page ID.
+        """Create a Notion page under the configured data source.
+
+        Returns the page ID.
 
         Raises:
             RetryAfterError: On 429 rate limit.
@@ -139,7 +207,10 @@ class NotionAdapter:
         """
         try:
             response = self._client.pages_create(
-                parent={"page_id": self._parent_page_id},
+                parent={
+                    "type": "data_source_id",
+                    "data_source_id": self._data_source_id,
+                },
                 properties=self._build_notion_properties(properties),
                 children=self._build_notion_blocks(children),
             )
@@ -153,9 +224,11 @@ class NotionAdapter:
         self,
         page_id: str,
         properties: dict[str, Any],
-        children: list[dict[str, Any]],
     ) -> str:
-        """Update an existing Notion page. Returns the page ID.
+        """Update properties of an existing Notion page.
+
+        Body (children) is updated separately via replace_body().
+        Returns the page ID.
 
         Raises:
             RetryAfterError: On 429 rate limit.
@@ -171,8 +244,83 @@ class NotionAdapter:
         except Exception as e:
             self._raise_classified(e)
 
+    def replace_body(
+        self,
+        page_id: str,
+        children: list[dict[str, Any]],
+    ) -> None:
+        """Full-replace page body (children blocks).
+
+        NON-ATOMIC: deletes all existing blocks then appends new ones.
+        If this method fails mid-way, the page may have partial or no body.
+        The caller must NOT update payload_hash on failure — the next run
+        will detect the hash mismatch and retry a full replace.
+
+        Steps:
+          1. List existing child blocks (paginated, page_size=100)
+          2. Delete each block
+          3. Append new blocks in chunks of 100
+
+        Raises:
+            RetryAfterError: On 429 rate limit.
+            NotionSyncError: On other API failures.
+        """
+        if self._blocks is None:
+            raise NotionSyncError(
+                "blocks API not available",
+                error_type="client_error",
+                retryable=False,
+            )
+
+        try:
+            # 1. List all existing child blocks (pagination)
+            existing_block_ids: list[str] = []
+            cursor: str | None = None
+            while True:
+                kwargs: dict[str, Any] = {
+                    "page_size": _BLOCKS_LIST_PAGE_SIZE,
+                }
+                if cursor:
+                    kwargs["start_cursor"] = cursor
+                result = self._blocks.children.list(
+                    block_id=page_id, **kwargs,
+                )
+                for block in result.get("results", []):
+                    block_id = block.get("id")
+                    if block_id:
+                        existing_block_ids.append(block_id)
+                if not result.get("has_more"):
+                    break
+                cursor = result.get("next_cursor")
+
+            # 2. Delete each existing block
+            for block_id in existing_block_ids:
+                self._blocks.delete(block_id=block_id)
+
+            # 3. Append new blocks in chunks of 100
+            new_blocks = self._build_notion_blocks(children)
+            for i in range(0, len(new_blocks), _BLOCKS_PER_APPEND):
+                chunk = new_blocks[i:i + _BLOCKS_PER_APPEND]
+                self._blocks.children.append(
+                    block_id=page_id,
+                    children=chunk,
+                )
+
+            logger.info(
+                "notion.body_replaced",
+                page_id=page_id,
+                deleted=len(existing_block_ids),
+                appended=len(new_blocks),
+            )
+        except Exception as e:
+            self._raise_classified(e)
+
     def _raise_classified(self, error: Exception) -> None:
         """Classify error and raise the appropriate NotionSyncError subtype."""
+        # Don't re-wrap our own errors
+        if isinstance(error, NotionSyncError):
+            raise error
+
         error_type, retryable, retry_after = classify_notion_error(error)
 
         if error_type == "rate_limit":
@@ -187,25 +335,60 @@ class NotionAdapter:
             retryable=retryable,
         ) from error
 
+    # ------------------------------------------------------------------
+    # Property mapping (driven by notion_schema.yaml)
+    # ------------------------------------------------------------------
+
     def _build_notion_properties(self, props: dict[str, Any]) -> dict[str, Any]:
         """Convert flat properties dict to Notion API property format.
 
-        Placeholder — real implementation maps to Notion property types.
+        Mapping is driven entirely by self._schema (loaded from
+        config/notion_schema.yaml). No property names are hard-coded.
+
+        Keys in schema but absent from props are silently skipped
+        (no KeyError). This covers optional/nullable fields that
+        build_notion_payload may omit.
         """
         notion_props: dict[str, Any] = {}
 
-        if "title" in props:
-            notion_props["제목"] = {
-                "title": [{"text": {"content": props["title"] or ""}}]
-            }
+        for payload_key, schema_entry in self._schema.items():
+            if payload_key not in props:
+                continue
 
-        # Additional properties would be mapped here per Notion schema
+            value = props[payload_key]
+            notion_name = schema_entry["name"]
+            prop_type = schema_entry["type"]
+            nullable = schema_entry.get("nullable", False)
+
+            # Skip nullable properties with None value
+            if value is None and nullable:
+                continue
+
+            converted = self._convert_property(prop_type, value)
+            if converted is not None:
+                notion_props[notion_name] = converted
+
         return notion_props
+
+    def _convert_property(
+        self, prop_type: str, value: Any,
+    ) -> dict[str, Any] | None:
+        """Convert a single property value to Notion API format."""
+        converter = _PROPERTY_CONVERTERS.get(prop_type)
+        if converter is None:
+            logger.warning("notion.unknown_property_type", type=prop_type)
+            return None
+        return converter(value)
+
+    # ------------------------------------------------------------------
+    # Block building
+    # ------------------------------------------------------------------
 
     def _build_notion_blocks(self, body: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert body blocks to Notion block format.
 
-        Placeholder — real implementation creates heading + paragraph blocks.
+        Each section becomes a heading_2 + paragraph blocks.
+        Text is chunked to 2000 chars per block (Notion limit).
         """
         blocks: list[dict[str, Any]] = []
         for section in body:
@@ -216,8 +399,7 @@ class NotionAdapter:
                     "rich_text": [{"text": {"content": section.get("type", "")}}]
                 },
             })
-            # Split content into paragraphs (Notion limit: 2000 chars per block)
-            for chunk in _chunk_text(content, 2000):
+            for chunk in _chunk_text(content, _TEXT_CHUNK_SIZE):
                 blocks.append({
                     "type": "paragraph",
                     "paragraph": {
@@ -225,6 +407,60 @@ class NotionAdapter:
                     },
                 })
         return blocks
+
+
+# ---------------------------------------------------------------------------
+# Property type converters — pure functions
+# ---------------------------------------------------------------------------
+
+
+def _to_title(value: Any) -> dict[str, Any]:
+    return {"title": [{"text": {"content": str(value) if value else ""}}]}
+
+
+def _to_url(value: Any) -> dict[str, Any]:
+    return {"url": str(value) if value else None}
+
+
+def _to_date(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"date": None}
+    return {"date": {"start": str(value)}}
+
+
+def _to_select(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"select": None}
+    return {"select": {"name": str(value)}}
+
+
+def _to_multi_select(value: Any) -> dict[str, Any]:
+    items = value if isinstance(value, list) else []
+    return {"multi_select": [{"name": str(v)} for v in items]}
+
+
+def _to_rich_text(value: Any) -> dict[str, Any]:
+    return {"rich_text": [{"text": {"content": str(value) if value else ""}}]}
+
+
+def _to_checkbox(value: Any) -> dict[str, Any]:
+    return {"checkbox": bool(value)}
+
+
+_PROPERTY_CONVERTERS: dict[str, Any] = {
+    "title": _to_title,
+    "url": _to_url,
+    "date": _to_date,
+    "select": _to_select,
+    "multi_select": _to_multi_select,
+    "rich_text": _to_rich_text,
+    "checkbox": _to_checkbox,
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _chunk_text(text: str, max_len: int) -> list[str]:

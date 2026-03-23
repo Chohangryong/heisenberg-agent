@@ -46,13 +46,30 @@ class FakeChromaAdapter:
 
 
 class FakeNotionAdapter:
-    """Records create/update calls. Optionally fails."""
+    """Records create/update/replace_body calls. Optionally fails.
 
-    def __init__(self, *, should_fail: bool = False, fail_429: bool = False) -> None:
+    Supports independent failure modes:
+    - should_fail: create_page and update_page raise NotionSyncError
+    - fail_429: create_page raises RetryAfterError
+    - fail_on_update: update_page raises NotionSyncError (property update failure)
+    - fail_on_replace_body: replace_body raises NotionSyncError (body replace failure)
+    """
+
+    def __init__(
+        self,
+        *,
+        should_fail: bool = False,
+        fail_429: bool = False,
+        fail_on_update: bool = False,
+        fail_on_replace_body: bool = False,
+    ) -> None:
         self.create_calls: list[dict] = []
         self.update_calls: list[dict] = []
+        self.replace_body_calls: list[dict] = []
         self._should_fail = should_fail
         self._fail_429 = fail_429
+        self._fail_on_update = fail_on_update
+        self._fail_on_replace_body = fail_on_replace_body
 
     def create_page(self, properties: dict, children: list) -> str:
         if self._fail_429:
@@ -67,15 +84,24 @@ class FakeNotionAdapter:
         self.create_calls.append({"properties": properties, "children": children})
         return "notion-page-id-123"
 
-    def update_page(self, page_id: str, properties: dict, children: list) -> str:
-        if self._should_fail:
+    def update_page(self, page_id: str, properties: dict) -> str:
+        if self._should_fail or self._fail_on_update:
             from heisenberg_agent.adapters.notion_adapter import NotionSyncError
             raise NotionSyncError(
-                "Fake notion failure",
+                "Fake notion update failure",
                 error_type="server_error", retryable=True,
             )
         self.update_calls.append({"page_id": page_id, "properties": properties})
         return page_id
+
+    def replace_body(self, page_id: str, children: list) -> None:
+        if self._fail_on_replace_body:
+            from heisenberg_agent.adapters.notion_adapter import NotionSyncError
+            raise NotionSyncError(
+                "Fake body replace failure",
+                error_type="server_error", retryable=True,
+            )
+        self.replace_body_calls.append({"page_id": page_id, "children": children})
 
 
 # ---------------------------------------------------------------------------
@@ -488,3 +514,174 @@ def test_failed_event_contains_structured_payload(db_session: Session):
     assert "attempt_count" in payload
     assert "error_code" in payload
     assert "error_message" in payload
+
+
+# ---------------------------------------------------------------------------
+# Failure recovery — payload_hash not updated on partial failure
+# ---------------------------------------------------------------------------
+
+
+def _first_sync_then_setup_update(db_session: Session):
+    """Helper: first sync creates page, then return article + job for update tests."""
+    article = _create_analyzed_article(db_session)
+    notion = FakeNotionAdapter()
+
+    agent = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion,
+        settings=FakeSettings(),
+    )
+    agent.run()
+
+    job = db_session.query(SyncJob).filter_by(
+        article_id=article.id, target="notion",
+    ).first()
+    assert job.status == "succeeded"
+    assert job.external_id == "notion-page-id-123"
+    first_hash = job.payload_hash
+
+    # Change analysis to trigger a new payload hash
+    from heisenberg_agent.storage.models import AnalysisRun
+    from sqlalchemy import update
+
+    db_session.execute(
+        update(AnalysisRun)
+        .where(AnalysisRun.id == article.current_analysis_id)
+        .values(is_current=False)
+    )
+    new_run = AnalysisRun(
+        article_id=article.id,
+        source_content_hash="hash_changed",
+        analysis_version="analysis.v1",
+        prompt_bundle_version="prompt-bundle.v1",
+        summary_json=json.dumps({
+            "core_thesis": "CHANGED",
+            "supporting_points": ["New"],
+            "conclusion": "New conclusion",
+            "keywords": ["Changed"],
+            "importance": "medium",
+        }),
+        critique_json=json.dumps({
+            "logic_gaps": [], "missing_views": [],
+            "claims_to_verify": [], "interest_analysis": "New",
+            "overall_assessment": "New",
+        }),
+        llm_model="fake-model",
+        is_current=True,
+        status="succeeded",
+    )
+    db_session.add(new_run)
+    db_session.flush()
+    article.current_analysis_id = new_run.id
+    article.content_hash = "hash_changed"
+    db_session.commit()
+
+    return article, job, first_hash
+
+
+def test_property_update_failure_leaves_hash_unchanged(db_session: Session):
+    """Property update failure → payload_hash NOT updated → next run retries full replace."""
+    article, job, first_hash = _first_sync_then_setup_update(db_session)
+
+    # Second sync with property update failure
+    notion_fail = FakeNotionAdapter(fail_on_update=True)
+    agent2 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_fail,
+        settings=FakeSettings(),
+    )
+    stats = agent2.run()
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.payload_hash == first_hash  # hash NOT updated
+    assert len(notion_fail.replace_body_calls) == 0  # body never attempted
+
+    # Third sync with working adapter → full replace (not noop)
+    notion_ok = FakeNotionAdapter()
+    agent3 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_ok,
+        settings=FakeSettings(),
+    )
+    stats3 = agent3.run()
+
+    db_session.refresh(job)
+    assert job.status == "succeeded"
+    assert job.payload_hash != first_hash  # hash updated after success
+    assert len(notion_ok.update_calls) == 1
+    assert len(notion_ok.replace_body_calls) == 1
+
+
+def test_body_replace_failure_leaves_hash_unchanged(db_session: Session):
+    """Body replace failure → payload_hash NOT updated → next run retries full replace."""
+    article, job, first_hash = _first_sync_then_setup_update(db_session)
+
+    # Second sync: property update succeeds, body replace fails
+    notion_fail = FakeNotionAdapter(fail_on_replace_body=True)
+    agent2 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_fail,
+        settings=FakeSettings(),
+    )
+    stats = agent2.run()
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.payload_hash == first_hash  # hash NOT updated
+    assert len(notion_fail.update_calls) == 1  # property update succeeded
+    # replace_body was attempted but failed — calls list records only successes
+    assert len(notion_fail.replace_body_calls) == 0
+
+    # Third sync with working adapter → full replace (not noop)
+    notion_ok = FakeNotionAdapter()
+    agent3 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_ok,
+        settings=FakeSettings(),
+    )
+    stats3 = agent3.run()
+
+    db_session.refresh(job)
+    assert job.status == "succeeded"
+    assert job.payload_hash != first_hash
+    assert stats3["synced"] >= 1
+
+
+def test_both_succeed_then_hash_updated(db_session: Session):
+    """Properties + body both succeed → payload_hash IS updated → next run is noop."""
+    article, job, first_hash = _first_sync_then_setup_update(db_session)
+
+    # Second sync: both succeed
+    notion_ok = FakeNotionAdapter()
+    agent2 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_ok,
+        settings=FakeSettings(),
+    )
+    stats = agent2.run()
+
+    db_session.refresh(job)
+    assert job.status == "succeeded"
+    new_hash = job.payload_hash
+    assert new_hash != first_hash  # hash updated
+
+    # Third sync: noop (hash matches)
+    notion_noop = FakeNotionAdapter()
+    agent3 = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapter(),
+        notion_adapter=notion_noop,
+        settings=FakeSettings(),
+    )
+    stats3 = agent3.run()
+
+    assert len(notion_noop.update_calls) == 0
+    assert len(notion_noop.replace_body_calls) == 0
+    assert stats3["synced"] == 0

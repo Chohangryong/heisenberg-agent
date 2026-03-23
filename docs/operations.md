@@ -167,6 +167,82 @@ bind는 `127.0.0.1` (localhost only)로 고정. 외부 노출 없음.
 - [ ] scheduler 중 `--mode pipeline` 수동 실행 → LockError 거부 (정상)
 - [ ] manual trigger 설정 시: `127.0.0.1` bind 확인, token 인증 정상 작동
 
+## Notion Sync
+
+### 스키마 관리 (SSOT)
+
+`config/notion_schema.yaml`이 Notion property 매핑의 **단일 정의**다.
+adapter 코드에 property name이 하드코딩되어 있지 않으며,
+런타임에 이 yaml을 로드하여 매핑을 생성한다.
+
+**운영 규칙: yaml의 `name` 필드는 실제 Notion Data Source의 property 이름과
+정확히 일치해야 한다.** Notion에서 property 이름을 변경하면 yaml도 함께 수정해야 하고,
+yaml을 수정하면 Notion Data Source도 함께 맞춰야 한다.
+드리프트 방지를 위해 `test_schema_keys_match_payload_keys` 테스트가
+payload ↔ yaml 키 일치를 CI에서 자동 검증한다.
+
+### 환경변수
+
+| 변수 | 필수 | 설명 |
+|---|---|---|
+| `NOTION_API_KEY` | notion.enabled=True 시 | Notion integration token |
+| `NOTION_DATA_SOURCE_ID` | notion.enabled=True 시 | 페이지 생성 대상 Data Source UUID |
+| `NOTION_PARENT_PAGE_ID` | 선택 | DB/data source 자동 생성 시에만 사용 |
+
+`NOTION_DATA_SOURCE_ID`가 비어있고 `notion.enabled=True`이면
+앱은 정상 기동하되 notion sync를 skip하고 경고 로그를 남긴다.
+
+### Body 정책: Viewer-Only Managed Content
+
+Notion 페이지의 body(본문)는 파이프라인이 전체 교체하는 **managed content**다.
+수동 메모를 Notion body에 쓰면 다음 sync에서 삭제된다.
+
+- 수동 메모/주석은 `article_annotations.user_memo`에 기록
+- body는 summary → critique → meta 고정 순서
+- 변경 감지는 payload_hash 기반. hash 불일치 시 full replace
+
+### body replace의 비원자성
+
+body replace는 delete all → append all 순서로 진행되며 **원자적이지 않다.**
+중간 실패 시 페이지에 body가 일부만 남거나 빈 상태가 될 수 있다.
+
+- 실패 시 job은 `failed`로 마킹되고 `payload_hash`는 **갱신되지 않는다**
+- 다음 run에서 hash 불일치를 감지하고 full replace를 재시도한다
+- `payload_hash`는 properties + body **둘 다 성공한 후에만** 갱신된다
+
+### Sync 모니터링
+
+```bash
+# 최근 sync 결과
+grep "sync.run_finished" logs/heisenberg.log | tail -5
+
+# 실패한 job 확인
+grep "sync.job_failed" logs/heisenberg.log | tail -10
+
+# Notion rate limit (429 circuit breaker)
+grep "sync.notion_rate_limited" logs/heisenberg.log | tail -5
+
+# exhausted jobs (재시도 한도 초과)
+grep "exhausted" logs/heisenberg.log | tail -5
+```
+
+### Sync 트러블슈팅
+
+**Notion sync가 skip됨 ("notion.skip_no_data_source_id")**:
+→ `.env`에 `NOTION_DATA_SOURCE_ID`를 설정하라.
+
+**Property 이름 불일치 에러 (400 Bad Request)**:
+→ Notion Data Source의 실제 property 이름과 `config/notion_schema.yaml`의
+`name` 필드가 일치하는지 확인하라.
+
+**Body가 비어있음 (partial replace 실패)**:
+→ 다음 sync run에서 자동 복구된다 (payload_hash 미갱신 → full replace 재시도).
+→ 즉시 복구하려면 수동 실행: `python -m heisenberg_agent.main --mode sync`
+
+**Rate limit (429) 반복**:
+→ circuit breaker가 작동하여 나머지 job을 defer한다.
+→ 기본 retry_after (60초) 후 재시도. 지속적이면 cron 주기를 늘려라.
+
 ## Troubleshooting
 
 **scheduler가 시작 안 됨**:

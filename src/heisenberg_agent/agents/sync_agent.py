@@ -316,6 +316,13 @@ class SyncAgent:
         analysis_run: AnalysisRun,
         stats: dict[str, int],
     ) -> None:
+        """Sync article to Notion.
+
+        For updates, properties and body are updated separately.
+        Non-atomic: properties are updated first, then body is replaced.
+        payload_hash is updated ONLY when BOTH succeed — if either fails,
+        the hash remains stale so the next run retries a full replace.
+        """
         # Load annotations and tags
         annotations = self._session.get(ArticleAnnotation, article.id)
         tag_names = self._load_tag_names(article.id)
@@ -333,17 +340,25 @@ class SyncAgent:
         try:
             assert self._notion is not None
             if job.external_id:
+                # Update path: properties first, then body replace.
+                # Non-atomic — if body replace fails after property update,
+                # payload_hash is NOT updated so next run retries full replace.
                 page_id = self._notion.update_page(
                     page_id=job.external_id,
                     properties=payload["properties"],
+                )
+                self._notion.replace_body(
+                    page_id=job.external_id,
                     children=payload["body"],
                 )
             else:
+                # Create path: properties + body in single API call
                 page_id = self._notion.create_page(
                     properties=payload["properties"],
                     children=payload["body"],
                 )
             # payload_hash is updated ONLY on full success
+            # (both properties and body for update path)
             sync_repo.mark_succeeded(
                 self._session, job,
                 payload_hash=new_hash,
