@@ -123,7 +123,10 @@ def _run_sync(settings, engine, logger) -> None:
 
     notion = None
     if getattr(settings.notion, "enabled", True):
-        notion = NotionAdapter.from_settings(settings)
+        if settings.notion_data_source_id:
+            notion = NotionAdapter.from_settings(settings)
+        else:
+            logger.warning("notion.skip_no_data_source_id")
 
     try:
         agent = SyncAgent(
@@ -179,7 +182,10 @@ def _run_pipeline(settings, engine, logger) -> None:
         chroma = ChromaAdapter.from_settings(settings)
     notion = None
     if getattr(settings.notion, "enabled", True):
-        notion = NotionAdapter.from_settings(settings)
+        if settings.notion_data_source_id:
+            notion = NotionAdapter.from_settings(settings)
+        else:
+            logger.warning("notion.skip_no_data_source_id")
 
     collector = CollectorAgent(
         adapter=pw_adapter, session=session, selectors=selectors, settings=settings,
@@ -257,7 +263,10 @@ def _run_scheduler(settings, engine, logger) -> None:
             chroma = ChromaAdapter.from_settings(settings)
         notion = None
         if getattr(settings.notion, "enabled", True):
-            notion = NotionAdapter.from_settings(settings)
+            if settings.notion_data_source_id:
+                notion = NotionAdapter.from_settings(settings)
+            else:
+                logger.warning("notion.skip_no_data_source_id")
 
         collector = CollectorAgent(
             adapter=pw_adapter, session=session, selectors=selectors, settings=settings,

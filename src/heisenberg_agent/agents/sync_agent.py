@@ -63,9 +63,12 @@ class SyncAgent:
         """Run one sync cycle.
 
         Returns:
-            Stats: {ensured, synced, skipped, failed}.
+            Stats: {ensured, synced, skipped, failed, deferred}.
         """
-        stats = {"ensured": 0, "synced": 0, "skipped": 0, "failed": 0}
+        stats = {
+            "ensured": 0, "synced": 0, "skipped": 0,
+            "failed": 0, "deferred": 0,
+        }
 
         # 1. Ensure sync jobs exist for analyzed articles
         stats["ensured"] = self._ensure_all_jobs()
@@ -85,7 +88,11 @@ class SyncAgent:
     # ------------------------------------------------------------------
 
     def _ensure_all_jobs(self) -> int:
-        """Create/re-arm sync jobs for all analyzed articles."""
+        """Create/re-arm sync jobs for all analyzed articles.
+
+        Pre-computes payload hashes so ensure_sync_jobs can detect
+        payload changes for re-arm decisions without rebuilding payloads.
+        """
         enabled = self._enabled_targets()
         if not enabled:
             return 0
@@ -99,8 +106,33 @@ class SyncAgent:
         articles = list(self._session.execute(stmt).scalars().all())
 
         for article in articles:
+            vector_hash = None
+            notion_hash = None
+
+            analysis_run = self._session.get(
+                AnalysisRun, article.current_analysis_id,
+            )
+            if analysis_run is None:
+                continue
+
+            if "vector" in enabled:
+                _, vector_hash = build_vector_payload(
+                    article, analysis_run, embedding_version,
+                )
+
+            if "notion" in enabled:
+                annotations = self._session.get(
+                    ArticleAnnotation, article.id,
+                )
+                tag_names = self._load_tag_names(article.id)
+                _, notion_hash = build_notion_payload(
+                    article, analysis_run, annotations, tag_names,
+                )
+
             sync_repo.ensure_sync_jobs(
                 self._session, article, enabled, embedding_version,
+                current_vector_hash=vector_hash,
+                current_notion_hash=notion_hash,
             )
 
         logger.info("sync.jobs_ensured", count=len(articles))
@@ -111,16 +143,25 @@ class SyncAgent:
     # ------------------------------------------------------------------
 
     def _process_target(self, target: str, stats: dict[str, int]) -> None:
-        """Process all pending jobs for a target."""
+        """Process all pending jobs for a target.
+
+        Notion circuit breaker: on RetryAfterError, remaining jobs are
+        deferred (next_retry_at set) without incrementing attempt_count,
+        and the loop breaks immediately.
+        """
         jobs = sync_repo.find_pending_jobs(self._session, target)
         logger.info("sync.processing_target", target=target, job_count=len(jobs))
 
-        for job in jobs:
+        for i, job in enumerate(jobs):
             if not sync_repo.try_lock(self._session, job.id):
                 continue
 
             try:
                 self._process_one_job(job, target, stats)
+            except RetryAfterError as e:
+                # Circuit breaker: defer remaining notion jobs
+                self._handle_rate_limit(e, job, jobs[i + 1:], stats)
+                break
             except Exception as e:
                 logger.error(
                     "sync.unexpected_error",
@@ -134,10 +175,56 @@ class SyncAgent:
                 if job.locked_at is not None:
                     sync_repo.unlock(self._session, job)
 
+    def _handle_rate_limit(
+        self,
+        error: RetryAfterError,
+        failed_job: SyncJob,
+        remaining_jobs: list[SyncJob],
+        stats: dict[str, int],
+    ) -> None:
+        """Handle 429 circuit breaker for a target.
+
+        1. The job that hit 429 is marked failed (attempt_count +1).
+        2. Remaining un-called jobs get next_retry_at set without
+           incrementing attempt_count (no API call was made).
+        """
+        # Mark the triggering job as failed
+        sync_repo.mark_failed(
+            self._session, failed_job,
+            error_code="429",
+            error_message=str(error),
+            error_type="rate_limit",
+            retryable=True,
+            retry_after_seconds=error.retry_after,
+        )
+        stats["failed"] += 1
+
+        # Defer remaining jobs
+        deferred_count = 0
+        for remaining_job in remaining_jobs:
+            sync_repo.defer_for_rate_limit(
+                self._session, remaining_job, error.retry_after,
+            )
+            deferred_count += 1
+
+        stats["deferred"] += deferred_count
+
+        logger.warning(
+            "sync.notion_rate_limited",
+            deferred_count=deferred_count,
+            retry_after=error.retry_after,
+            article_id=failed_job.article_id,
+            job_id=failed_job.id,
+        )
+
     def _process_one_job(
         self, job: SyncJob, target: str, stats: dict[str, int],
     ) -> None:
-        """Process a single sync job."""
+        """Process a single sync job.
+
+        RetryAfterError is NOT caught here — it propagates to
+        _process_target for circuit breaker handling.
+        """
         article = self._session.get(Article, job.article_id)
         if article is None or article.current_analysis_id is None:
             sync_repo.unlock(self._session, job)
@@ -188,6 +275,7 @@ class SyncAgent:
                 document=payload["document"],
                 metadata=payload["metadata"],
             )
+            # payload_hash is updated ONLY on full success
             sync_repo.mark_succeeded(
                 self._session, job,
                 payload_hash=new_hash,
@@ -197,10 +285,23 @@ class SyncAgent:
             )
             stats["synced"] += 1
         except ChromaSyncError as e:
+            logger.warning(
+                "sync.job_failed",
+                target="vector",
+                error_type=e.error_type,
+                retryable=e.retryable,
+                attempt_count=(job.attempt_count or 0) + 1,
+                article_id=job.article_id,
+                job_id=job.id,
+                error_code="chroma_error",
+                error_message=str(e),
+            )
             sync_repo.mark_failed(
                 self._session, job,
                 error_code="chroma_error",
                 error_message=str(e),
+                error_type=e.error_type,
+                retryable=e.retryable,
             )
             stats["failed"] += 1
 
@@ -215,6 +316,13 @@ class SyncAgent:
         analysis_run: AnalysisRun,
         stats: dict[str, int],
     ) -> None:
+        """Sync article to Notion.
+
+        For updates, properties and body are updated separately.
+        Non-atomic: properties are updated first, then body is replaced.
+        payload_hash is updated ONLY when BOTH succeed — if either fails,
+        the hash remains stale so the next run retries a full replace.
+        """
         # Load annotations and tags
         annotations = self._session.get(ArticleAnnotation, article.id)
         tag_names = self._load_tag_names(article.id)
@@ -232,16 +340,25 @@ class SyncAgent:
         try:
             assert self._notion is not None
             if job.external_id:
+                # Update path: properties first, then body replace.
+                # Non-atomic — if body replace fails after property update,
+                # payload_hash is NOT updated so next run retries full replace.
                 page_id = self._notion.update_page(
                     page_id=job.external_id,
                     properties=payload["properties"],
+                )
+                self._notion.replace_body(
+                    page_id=job.external_id,
                     children=payload["body"],
                 )
             else:
+                # Create path: properties + body in single API call
                 page_id = self._notion.create_page(
                     properties=payload["properties"],
                     children=payload["body"],
                 )
+            # payload_hash is updated ONLY on full success
+            # (both properties and body for update path)
             sync_repo.mark_succeeded(
                 self._session, job,
                 payload_hash=new_hash,
@@ -249,19 +366,27 @@ class SyncAgent:
                 synced_analysis_id=article.current_analysis_id,
             )
             stats["synced"] += 1
-        except RetryAfterError as e:
-            sync_repo.mark_failed(
-                self._session, job,
-                error_code="429",
-                error_message=str(e),
-                retry_after_seconds=e.retry_after,
-            )
-            stats["failed"] += 1
+        except RetryAfterError:
+            # Propagate to _process_target for circuit breaker handling
+            raise
         except NotionSyncError as e:
+            logger.warning(
+                "sync.job_failed",
+                target="notion",
+                error_type=e.error_type,
+                retryable=e.retryable,
+                attempt_count=(job.attempt_count or 0) + 1,
+                article_id=job.article_id,
+                job_id=job.id,
+                error_code="notion_error",
+                error_message=str(e),
+            )
             sync_repo.mark_failed(
                 self._session, job,
                 error_code="notion_error",
                 error_message=str(e),
+                error_type=e.error_type,
+                retryable=e.retryable,
             )
             stats["failed"] += 1
 

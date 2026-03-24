@@ -64,7 +64,7 @@ class VectorDBSettings(BaseSettings):
 
 class NotionSettings(BaseSettings):
     enabled: bool = True
-    api_version: str = "2022-06-28"
+    api_version: str = "2025-09-03"
     sync_mode: str = "one_way"
     dry_run: bool = False
     obey_retry_after: bool = True
@@ -103,7 +103,8 @@ class AppSettings(BaseSettings):
     heisenberg_username_or_email: str = ""
     heisenberg_password: str = ""
     notion_api_key: str = ""
-    notion_parent_page_id: str = ""
+    notion_data_source_id: str = ""
+    notion_parent_page_id: str = ""  # 선택. DB/data source 자동 생성 시에만 사용
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     log_level: str = "INFO"
