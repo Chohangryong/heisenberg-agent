@@ -64,7 +64,7 @@ class VectorDBSettings(BaseSettings):
 
 class NotionSettings(BaseSettings):
     enabled: bool = True
-    api_version: str = "2022-06-28"
+    api_version: str = "2025-09-03"
     sync_mode: str = "one_way"
     dry_run: bool = False
     obey_retry_after: bool = True

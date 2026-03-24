@@ -156,7 +156,7 @@ class NotionAdapter:
         self,
         client: NotionClient,
         data_source_id: str,
-        api_version: str = "2022-06-28",
+        api_version: str = "2025-09-03",
         schema: dict[str, dict[str, Any]] | None = None,
         blocks_api: BlocksAPI | None = None,
     ) -> None:

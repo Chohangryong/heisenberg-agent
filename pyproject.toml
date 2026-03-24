@@ -21,6 +21,7 @@ dependencies = [
     "structlog>=24.0",
     "tenacity>=8.2",
     "apscheduler>=3.10",
+    "notion-client>=2.7",
 ]
 
 [project.optional-dependencies]
