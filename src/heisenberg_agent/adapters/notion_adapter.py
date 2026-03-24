@@ -141,6 +141,25 @@ def load_notion_schema(path: Path | None = None) -> dict[str, dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# SDK wrapper — bridges notion-client's client.pages.create() to Protocol's
+# pages_create() / pages_update() interface used by NotionAdapter.
+# ---------------------------------------------------------------------------
+
+
+class _SDKClientWrapper:
+    """Adapt notion-client SDK (client.pages.create) to flat Protocol interface."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def pages_create(self, **kwargs: Any) -> dict[str, Any]:
+        return self._client.pages.create(**kwargs)
+
+    def pages_update(self, page_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._client.pages.update(page_id=page_id, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
 
@@ -186,7 +205,7 @@ class NotionAdapter:
             notion_version=settings.notion.api_version,
         )
         return cls(
-            client=client,
+            client=_SDKClientWrapper(client),
             data_source_id=settings.notion_data_source_id,
             api_version=settings.notion.api_version,
             blocks_api=client.blocks,
