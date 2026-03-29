@@ -98,3 +98,38 @@ def test_mixed_items(db_session):
     assert dispositions["brand-new"] == Disposition.NEW
     assert dispositions["recent"] == Disposition.RECHECK
     assert dispositions["old"] == Disposition.SKIP
+
+
+def test_exact_cutoff_is_skip(db_session, monkeypatch):
+    """collected_at exactly at cutoff (now - 7 days) → SKIP."""
+    fixed_now = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "heisenberg_agent.agents.collector.now_utc", lambda: fixed_now
+    )
+
+    cutoff = fixed_now - timedelta(days=7)
+    article = _make_article("exact-cutoff", cutoff)
+    db_session.add(article)
+    db_session.commit()
+
+    agent = _make_agent(db_session)
+    result = agent._filter([_make_item("exact-cutoff")])
+    assert result[0].disposition == Disposition.SKIP
+
+
+def test_just_after_cutoff_is_recheck(db_session, monkeypatch):
+    """collected_at one second after cutoff → RECHECK."""
+    fixed_now = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "heisenberg_agent.agents.collector.now_utc", lambda: fixed_now
+    )
+
+    cutoff = fixed_now - timedelta(days=7)
+    collected_at = cutoff + timedelta(seconds=1)
+    article = _make_article("just-after", collected_at)
+    db_session.add(article)
+    db_session.commit()
+
+    agent = _make_agent(db_session)
+    result = agent._filter([_make_item("just-after")])
+    assert result[0].disposition == Disposition.RECHECK
