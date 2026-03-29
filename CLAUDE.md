@@ -99,8 +99,56 @@
 
 ## 참조 문서
 
-- 전체 설계: `@docs/design/heisenberg_agent_design_v1.4.md`
-- 구현 참조 맵: `@docs/references/implementation_reference_map.md`
+- 전체 설계: `@design/heisenberg_agent_design_v1.4.md`
+- 구현 참조 맵: `@docs/implementation_reference_map.md`
+
+## Harness Operating Model
+
+이 프로젝트는 `.claude/` 하위의 agents, skills, checklists, templates로 구성된 harness를 사용한다.
+
+### 워크플로우 (4-phase)
+
+```
+phase-start → phase-implement → phase-review → phase-finish
+```
+
+| Phase | Skill 경로 | 핵심 동작 |
+|---|---|---|
+| start | `.claude/skills/phase-start/` | 요구사항 확인, planner subagent 호출, 사용자 승인 |
+| implement | `.claude/skills/phase-implement/` | generator subagent 호출, 코드 작성, 테스트 실행 |
+| review | `.claude/skills/phase-review/` | evaluator subagent 호출, 체크리스트 검증, 피드백 루프 |
+| finish | `.claude/skills/phase-finish/` | 최종 점검, worklog 생성, 커밋 준비 |
+
+### Agents
+
+| Agent | 경로 | 역할 | 권한 |
+|---|---|---|---|
+| planner | `.claude/agents/planner.md` | 계획 수립 | 읽기 전용 (Read, Glob, Grep) |
+| generator | `.claude/agents/generator.md` | 코드 생성 | 구현 권한 (Read, Glob, Grep, Edit, Write, Bash) |
+| evaluator | `.claude/agents/evaluator.md` | 리뷰·검증 | 읽기 + 검증 (Read, Glob, Grep, Bash) |
+
+모든 agent는 self-contained — skills preload 없음, 하위 에이전트 호출 없음.
+
+### Checklists (자동 로드 안 됨 — skill 내에서 명시 참조)
+
+| Checklist | 경로 | 사용 시점 |
+|---|---|---|
+| ship | `@.claude/checklists/ship-checklist.md` | phase-implement, phase-review, phase-finish |
+| ops | `@.claude/checklists/ops-checklist.md` | phase-review |
+| live-smoke | `@.claude/checklists/live-smoke-checklist.md` | phase-finish |
+
+### Templates (자동 로드 안 됨 — skill 내에서 명시 참조)
+
+| Template | 경로 | 사용 시점 |
+|---|---|---|
+| worklog | `@.claude/templates/worklog-template.md` | phase-finish |
+
+### 규칙
+
+- checklists/templates는 자동 로드되지 않는다. 각 skill 또는 이 섹션에서 `@` 경로로 명시 참조한다.
+- worklog 읽기: phase-start에서 `docs/worklog/` 최신 1개만 읽는다. 없으면 skip.
+- worklog 생성: phase-finish에서만 `@.claude/templates/worklog-template.md` 기반으로 생성한다. 파일명은 `YYYY-MM-DD-{slug}.md` (영문 소문자, 숫자, 하이픈만).
+- 커밋은 phase-finish에서 사용자 승인 후에만 수행한다.
 
 ## 금지 패턴
 
