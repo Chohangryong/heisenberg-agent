@@ -170,10 +170,20 @@ class SyncAgent:
                 self._session.rollback()
                 stats["failed"] += 1
             finally:
-                # Ensure unlock even on unexpected errors
-                self._session.refresh(job)
-                if job.locked_at is not None:
-                    sync_repo.unlock(self._session, job)
+                # Ensure unlock even on unexpected errors.
+                # After rollback, session.refresh() may fail on a detached
+                # instance — fall back to a direct UPDATE to clear the lock.
+                try:
+                    self._session.refresh(job)
+                    if job.locked_at is not None:
+                        sync_repo.unlock(self._session, job)
+                except Exception:
+                    logger.warning(
+                        "sync.unlock_fallback",
+                        job_id=job.id,
+                        target=target,
+                    )
+                    sync_repo.force_unlock(self._session, job.id)
 
     def _handle_rate_limit(
         self,

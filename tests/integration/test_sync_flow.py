@@ -685,3 +685,56 @@ def test_both_succeed_then_hash_updated(db_session: Session):
     assert len(notion_noop.update_calls) == 0
     assert len(notion_noop.replace_body_calls) == 0
     assert stats3["synced"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Unexpected error — safe unlock (Batch 1-3)
+# ---------------------------------------------------------------------------
+
+
+class FakeChromaAdapterUnexpectedError:
+    """Raises bare RuntimeError — not caught by _process_one_job."""
+
+    def upsert(self, doc_id: str, document: str, metadata: dict) -> str:
+        raise RuntimeError("Unexpected disk corruption")
+
+
+def test_process_target_unexpected_error_unlocks_job(db_session: Session):
+    """Unexpected error in adapter → job is unlocked, not stuck."""
+    _create_analyzed_article(db_session)
+
+    agent = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapterUnexpectedError(),
+        notion_adapter=FakeNotionAdapter(),
+        settings=FakeSettingsVectorOnly(),
+    )
+    stats = agent.run()
+
+    assert stats["failed"] >= 1
+
+    job = db_session.query(SyncJob).filter_by(target="vector").first()
+    assert job is not None
+    assert job.locked_at is None  # lock released
+
+
+def test_process_target_unexpected_error_no_stale_lock(db_session: Session):
+    """After unexpected error, locked_at is None — no stale lock remains."""
+    articles = [
+        _create_analyzed_article(db_session, slug=f"stale-{i}")
+        for i in range(3)
+    ]
+
+    agent = SyncAgent(
+        session=db_session,
+        chroma_adapter=FakeChromaAdapterUnexpectedError(),
+        notion_adapter=FakeNotionAdapter(),
+        settings=FakeSettingsVectorOnly(),
+    )
+    agent.run()
+
+    # ALL vector jobs must have locked_at == None
+    vector_jobs = db_session.query(SyncJob).filter_by(target="vector").all()
+    assert len(vector_jobs) == 3
+    for job in vector_jobs:
+        assert job.locked_at is None, f"Stale lock on job {job.id}"
