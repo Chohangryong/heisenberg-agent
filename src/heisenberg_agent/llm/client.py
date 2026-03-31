@@ -141,9 +141,11 @@ class LLMClient:
                 fallback_chain.append(self._config[key])
 
         # Try primary model
+        last_err: Exception | None = None
         try:
             return self._do_call(rendered, response_model, task_config, fallback_used=False)
         except Exception as primary_err:
+            last_err = primary_err
             logger.warning(
                 "llm.primary_failed",
                 task=task_key,
@@ -152,7 +154,6 @@ class LLMClient:
             )
 
         # Try fallback chain
-        last_err = primary_err
         for fb_config in fallback_chain:
             try:
                 return self._do_call(rendered, response_model, fb_config, fallback_used=True)
