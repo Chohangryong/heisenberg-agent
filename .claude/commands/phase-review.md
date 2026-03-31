@@ -1,9 +1,3 @@
----
-name: phase-review
-description: 리뷰 단계. evaluator subagent 호출, 체크리스트 기반 검증, 피드백 루프.
-user-invocable: true
----
-
 # Phase: Review
 
 구현 완료 후 실행하는 리뷰 워크플로우다.

@@ -1,9 +1,3 @@
----
-name: phase-start
-description: 작업 착수 단계. 요구사항 확인, planner subagent 호출, 사용자 승인.
-user-invocable: true
----
-
 # Phase: Start
 
 작업 착수 시 실행하는 워크플로우다.

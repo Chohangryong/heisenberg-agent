@@ -112,14 +112,20 @@
 phase-start → phase-implement → phase-review → phase-finish
 ```
 
-| Phase | Skill 경로 | 핵심 동작 |
-|---|---|---|
-| start | `.claude/skills/phase-start/` | 요구사항 확인, planner subagent 호출, 사용자 승인 |
-| implement | `.claude/skills/phase-implement/` | generator subagent 호출, 코드 작성, 테스트 실행 |
-| review | `.claude/skills/phase-review/` | evaluator subagent 호출, 체크리스트 검증, 피드백 루프 |
-| finish | `.claude/skills/phase-finish/` | 최종 점검, worklog 생성, 커밋 준비 |
+### Commands (직접 호출용)
 
-### Agents
+`/phase-*` 로 직접 호출하여 각 단계를 실행한다.
+
+| Command | 경로 | 핵심 동작 |
+|---|---|---|
+| `/phase-start` | `.claude/commands/phase-start.md` | 요구사항 확인, planner subagent 호출, 사용자 승인 |
+| `/phase-implement` | `.claude/commands/phase-implement.md` | generator subagent 호출, 코드 작성, 테스트 실행 |
+| `/phase-review` | `.claude/commands/phase-review.md` | evaluator subagent 호출, 체크리스트 검증, 피드백 루프 |
+| `/phase-finish` | `.claude/commands/phase-finish.md` | 최종 점검, worklog 생성, 커밋 준비 |
+
+### Agents (역할 분리용)
+
+Agent tool로 호출되는 subagent. commands가 내부적으로 사용한다.
 
 | Agent | 경로 | 역할 | 권한 |
 |---|---|---|---|
@@ -145,7 +151,7 @@ phase-start → phase-implement → phase-review → phase-finish
 
 ### 규칙
 
-- checklists/templates는 자동 로드되지 않는다. 각 skill 또는 이 섹션에서 `@` 경로로 명시 참조한다.
+- checklists/templates는 자동 로드되지 않는다. 각 command 또는 이 섹션에서 `@` 경로로 명시 참조한다.
 - worklog 읽기: phase-start에서 `docs/worklog/` 최신 1개만 읽는다. 없으면 skip.
 - worklog 생성: phase-finish에서만 `@.claude/templates/worklog-template.md` 기반으로 생성한다. 파일명은 `YYYY-MM-DD-{slug}.md` (영문 소문자, 숫자, 하이픈만).
 - 커밋은 phase-finish에서 사용자 승인 후에만 수행한다.
