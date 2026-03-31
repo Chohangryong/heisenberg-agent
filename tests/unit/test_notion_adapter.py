@@ -268,7 +268,7 @@ def test_build_notion_properties_all_fields():
     # url
     assert result["URL"]["url"] == "https://heisenberg.kr/test/"
     # date
-    assert result["발행일"]["date"]["start"] == "2026-03-15T09:00:00+00:00"
+    assert result["발행일"]["date"]["start"] == "2026-03-15"
     # select
     assert result["중요도"]["select"]["name"] == "high"
     assert result["카테고리"]["select"]["name"] == "AI"

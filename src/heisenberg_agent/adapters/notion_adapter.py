@@ -549,7 +549,12 @@ def _to_url(value: Any) -> dict[str, Any]:
 def _to_date(value: Any) -> dict[str, Any]:
     if value is None:
         return {"date": None}
-    return {"date": {"start": str(value)}}
+    # Send date-only (YYYY-MM-DD) to avoid timezone offset display issues
+    from datetime import datetime
+    if isinstance(value, datetime):
+        return {"date": {"start": value.strftime("%Y-%m-%d")}}
+    # String: take first 10 chars (YYYY-MM-DD)
+    return {"date": {"start": str(value)[:10]}}
 
 
 def _to_select(value: Any) -> dict[str, Any]:
