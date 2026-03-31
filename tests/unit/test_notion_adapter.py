@@ -235,8 +235,6 @@ def test_schema_keys_match_payload_keys():
     schema = load_notion_schema()
     schema_keys = set(schema.keys())
 
-    # Schema must cover all payload keys (except collected_at which is body-only)
-    payload_keys.discard("collected_at")
     assert schema_keys == payload_keys, (
         f"Schema drift detected.\n"
         f"  In schema but not payload: {schema_keys - payload_keys}\n"

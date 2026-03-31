@@ -120,7 +120,6 @@ def build_notion_payload(
     properties = {
         "title": article.title,
         "published_at": _canonical_dt(article.published_at),
-        "collected_at": _canonical_dt(article.collected_at),
         "url": article.url,
         "category": article.category,
         "author": article.author,
