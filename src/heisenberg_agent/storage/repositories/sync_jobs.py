@@ -219,6 +219,7 @@ def find_pending_jobs_for_article(
         .where(
             (SyncJob.locked_at == None) | (SyncJob.locked_at < stale_cutoff)  # noqa: E711
         )
+        .order_by(SyncJob.created_at.asc())
     )
     return list(session.execute(stmt).scalars().all())
 

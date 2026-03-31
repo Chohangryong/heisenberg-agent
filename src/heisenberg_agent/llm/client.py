@@ -96,10 +96,11 @@ class LLMClient:
         """
         Args:
             config: LLM config dict with keys like:
-                summary: {provider, model, max_tokens, temperature}
-                critique: {provider, model, max_tokens, temperature}
-                fallback: {provider, model}
-                max_input_chars: int (default 12000)
+                analysis: {provider, model, max_tokens, temperature}
+                fallback: {provider, model, max_tokens}
+                fallback_2: {provider, model, max_tokens}  (optional chain)
+                summary: (legacy) {provider, model, max_tokens, temperature}
+                critique: (legacy) {provider, model, max_tokens, temperature}
         """
         self._config = config
 

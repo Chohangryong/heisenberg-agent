@@ -58,6 +58,7 @@ class SyncAgent:
         self._chroma = chroma_adapter
         self._notion = notion_adapter
         self._settings = settings
+        self._notion_rate_limited = False
 
     def run(self) -> dict[str, int]:
         """Run one sync cycle.

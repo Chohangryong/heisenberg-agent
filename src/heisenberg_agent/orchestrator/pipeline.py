@@ -166,7 +166,7 @@ class Pipeline:
         except Exception as e:
             logger.error("pipeline.incremental_fatal", error=str(e))
             summaries.append(StageSummary(stage="analyze", fatal_error=str(e)[:500]))
-            summaries.append(StageSummary(stage="sync"))
+            summaries.append(StageSummary(stage="sync", fatal_error=str(e)[:500]))
 
         return summaries
 
@@ -180,20 +180,22 @@ class Pipeline:
         targets = self._analyzer.find_targets()
         logger.info("pipeline.incremental_targets", count=len(targets))
 
+        notion_blocked = False
+
         for article in targets:
             # Analyze
             result = self._analyzer.analyze_one(article)
             a_stats[result] += 1
 
-            # Sync immediately if analysis succeeded
-            if result == "analyzed":
+            # Sync immediately if analysis succeeded (skip if Notion rate-limited)
+            if result == "analyzed" and not notion_blocked:
                 sync_result = self._syncer.sync_one(article)
                 for k in s_stats:
                     s_stats[k] += sync_result.get(k, 0)
 
-                # Stop Notion sync if rate limited
                 if self._syncer.is_notion_rate_limited:
                     logger.warning("pipeline.notion_rate_limited_skipping_sync")
+                    notion_blocked = True
 
         logger.info("analyzer.run_finished", **a_stats)
         logger.info("sync.run_finished", **s_stats)
