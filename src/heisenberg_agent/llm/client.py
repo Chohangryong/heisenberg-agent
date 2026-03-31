@@ -170,6 +170,9 @@ class LLMClient:
             f"All models failed for {task_key}"
         ) from last_err
 
+    _MAX_RETRIES = 10
+    _RETRY_BASE_DELAY = 2.0  # seconds, exponential backoff
+
     def _do_call(
         self,
         rendered_prompt: str,
@@ -178,7 +181,7 @@ class LLMClient:
         *,
         fallback_used: bool,
     ) -> LLMResult:
-        """Execute a single LLM call with structured output."""
+        """Execute a single LLM call with structured output and retry."""
         import litellm
 
         model = model_config.get("model", "claude-sonnet-4-6")
@@ -191,6 +194,46 @@ class LLMClient:
         ensure_openai_strict_schema(schema)
         schema_name = response_model.__name__
 
+        last_err: Exception | None = None
+        for attempt in range(1, self._MAX_RETRIES + 1):
+            try:
+                return self._execute_completion(
+                    litellm, provider, model, rendered_prompt,
+                    max_tokens, temperature, schema, schema_name,
+                    response_model, fallback_used,
+                )
+            except Exception as e:
+                err_str = str(e).lower()
+                is_transient = "overloaded" in err_str or "rate_limit" in err_str or "529" in err_str or "500" in err_str
+                if not is_transient or attempt == self._MAX_RETRIES:
+                    raise
+                last_err = e
+                delay = min(self._RETRY_BASE_DELAY * (2 ** (attempt - 1)), 30.0)
+                logger.warning(
+                    "llm.retrying",
+                    model=model,
+                    attempt=attempt,
+                    delay=delay,
+                    error=str(e)[:200],
+                )
+                time.sleep(delay)
+
+        raise last_err  # should not reach here
+
+    def _execute_completion(
+        self,
+        litellm: Any,
+        provider: str,
+        model: str,
+        rendered_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        schema: dict[str, Any],
+        schema_name: str,
+        response_model: type[T],
+        fallback_used: bool,
+    ) -> LLMResult:
+        """Single LLM completion attempt."""
         start = time.monotonic()
         response = litellm.completion(
             model=f"{provider}/{model}" if provider else model,
