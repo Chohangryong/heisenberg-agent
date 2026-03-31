@@ -8,6 +8,7 @@ Test boundary: inject a fake client to eliminate live Notion API dependency.
 
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -220,12 +221,16 @@ class NotionAdapter:
         api_version: str = "2025-09-03",
         schema: dict[str, dict[str, Any]] | None = None,
         blocks_api: BlocksAPI | None = None,
+        max_blocks: int = 200,
+        max_payload_bytes: int = 200_000,
     ) -> None:
         self._client = client
         self._data_source_id = data_source_id
         self._api_version = api_version
         self._schema = schema or load_notion_schema()
         self._blocks = blocks_api
+        self._max_blocks = max_blocks
+        self._max_payload_bytes = max_payload_bytes
 
     @classmethod
     def from_settings(cls, settings: Any) -> "NotionAdapter":
@@ -251,6 +256,8 @@ class NotionAdapter:
             data_source_id=settings.notion_data_source_id,
             api_version=settings.notion.api_version,
             blocks_api=client.blocks,
+            max_blocks=settings.notion.max_blocks_per_payload,
+            max_payload_bytes=settings.notion.max_payload_bytes,
         )
 
     def create_page(
@@ -263,18 +270,31 @@ class NotionAdapter:
         Returns the page ID.
 
         Raises:
+            NotionSyncError(too_many_blocks): Block count exceeds app limit.
+            NotionSyncError(payload_too_large): Request body exceeds byte limit.
             RetryAfterError: On 429 rate limit.
             NotionSyncError: On other API failures.
         """
+        notion_props = self._build_notion_properties(properties)
+        blocks = self._build_notion_blocks(children)
+
+        # App-level upper bound on total blocks per page (not a Notion API
+        # hard limit). Prevents excessively large pages from being created.
+        self._validate_block_count(blocks)
+
+        parent = {
+            "type": "data_source_id",
+            "data_source_id": self._data_source_id,
+        }
+        request_body = {
+            "parent": parent,
+            "properties": notion_props,
+            "children": blocks,
+        }
+        self._validate_payload_size(request_body)
+
         try:
-            response = self._client.pages_create(
-                parent={
-                    "type": "data_source_id",
-                    "data_source_id": self._data_source_id,
-                },
-                properties=self._build_notion_properties(properties),
-                children=self._build_notion_blocks(children),
-            )
+            response = self._client.pages_create(**request_body)
             page_id = response.get("id", "")
             logger.info("notion.page_created", page_id=page_id)
             return page_id
@@ -293,13 +313,17 @@ class NotionAdapter:
         Returns the page ID.
 
         Raises:
+            NotionSyncError(payload_too_large): Properties body exceeds byte limit.
             RetryAfterError: On 429 rate limit.
             NotionSyncError: On other API failures.
         """
+        notion_props = self._build_notion_properties(properties)
+        self._validate_payload_size({"properties": notion_props})
+
         try:
             self._client.pages_update(
                 page_id=page_id,
-                properties=self._build_notion_properties(properties),
+                properties=notion_props,
             )
             logger.info("notion.page_updated", page_id=page_id)
             return page_id
@@ -360,10 +384,12 @@ class NotionAdapter:
             for block_id in existing_block_ids:
                 self._blocks.delete(block_id=block_id)
 
-            # 3. Append new blocks in chunks of 100
+            # 3. Append new blocks in chunks of 100.
+            # Each chunk is validated against max_payload_bytes before sending.
             new_blocks = self._build_notion_blocks(children)
             for i in range(0, len(new_blocks), _BLOCKS_PER_APPEND):
                 chunk = new_blocks[i:i + _BLOCKS_PER_APPEND]
+                self._validate_payload_size({"children": chunk})
                 self._blocks.children.append(
                     block_id=page_id,
                     children=chunk,
@@ -377,6 +403,30 @@ class NotionAdapter:
             )
         except Exception as e:
             self._raise_classified(e)
+
+    def _validate_block_count(self, blocks: list[dict[str, Any]]) -> None:
+        """Raise if block count exceeds the app-level upper bound.
+
+        This is a conservative app limit, not a Notion API hard limit.
+        Prevents excessively large pages from being created.
+        """
+        count = len(blocks)
+        if count > self._max_blocks:
+            raise NotionSyncError(
+                f"Payload exceeds max blocks: {count} > {self._max_blocks}",
+                error_type="too_many_blocks",
+                retryable=False,
+            )
+
+    def _validate_payload_size(self, request_body: dict[str, Any]) -> None:
+        """Raise if serialized request body exceeds max_payload_bytes."""
+        size = len(_json.dumps(request_body, ensure_ascii=False).encode())
+        if size > self._max_payload_bytes:
+            raise NotionSyncError(
+                f"Payload exceeds max bytes: {size} > {self._max_payload_bytes}",
+                error_type="payload_too_large",
+                retryable=False,
+            )
 
     def _raise_classified(self, error: Exception) -> None:
         """Classify error and raise the appropriate NotionSyncError subtype."""

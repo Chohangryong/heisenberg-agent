@@ -642,3 +642,108 @@ def test_rate_limit_not_retried_by_adapter(monkeypatch):
 
     with pytest.raises(RetryAfterError):
         adapter.update_page(page_id="p-1", properties={"title": "T"})
+
+
+# ---------------------------------------------------------------------------
+# Payload size pre-validation
+# ---------------------------------------------------------------------------
+
+
+def test_create_page_too_many_blocks():
+    """create_page raises too_many_blocks when block count exceeds limit."""
+    client = FakeNotionClient()
+    adapter = NotionAdapter(
+        client=client, data_source_id="ds-1", max_blocks=5,
+    )
+    # 4 sections × 2 blocks each = 8 blocks > 5
+    children = [{"type": f"s{i}", "content": f"c{i}"} for i in range(4)]
+
+    with pytest.raises(NotionSyncError) as exc_info:
+        adapter.create_page(properties={"title": "T"}, children=children)
+
+    assert exc_info.value.error_type == "too_many_blocks"
+    assert exc_info.value.retryable is False
+    assert len(client.create_calls) == 0
+
+
+def test_create_page_payload_too_large():
+    """create_page raises payload_too_large when request body exceeds byte limit."""
+    client = FakeNotionClient()
+    adapter = NotionAdapter(
+        client=client, data_source_id="ds-1", max_payload_bytes=100,
+    )
+    children = [{"type": "summary", "content": "x" * 200}]
+
+    with pytest.raises(NotionSyncError) as exc_info:
+        adapter.create_page(properties={"title": "T"}, children=children)
+
+    assert exc_info.value.error_type == "payload_too_large"
+    assert exc_info.value.retryable is False
+    assert len(client.create_calls) == 0
+
+
+def test_update_page_payload_too_large():
+    """update_page raises payload_too_large when properties body exceeds byte limit."""
+    client = FakeNotionClient()
+    adapter = NotionAdapter(
+        client=client, data_source_id="ds-1", max_payload_bytes=50,
+    )
+    props = {"title": "A" * 200}
+
+    with pytest.raises(NotionSyncError) as exc_info:
+        adapter.update_page(page_id="p-1", properties=props)
+
+    assert exc_info.value.error_type == "payload_too_large"
+    assert exc_info.value.retryable is False
+    assert len(client.update_calls) == 0
+
+
+def test_update_page_no_block_count_validation():
+    """update_page does NOT validate block count (it sends no blocks)."""
+    client = FakeNotionClient()
+    # max_blocks=1 would fail create_page, but update_page should succeed
+    adapter = NotionAdapter(
+        client=client, data_source_id="ds-1", max_blocks=1,
+    )
+
+    page_id = adapter.update_page(page_id="p-1", properties={"title": "T"})
+    assert page_id == "p-1"
+    assert len(client.update_calls) == 1
+
+
+def test_replace_body_chunk_payload_too_large():
+    """replace_body raises payload_too_large when a chunk exceeds byte limit."""
+    blocks_api = FakeBlocksAPI(existing_blocks=[])
+    adapter = NotionAdapter(
+        client=FakeNotionClient(),
+        data_source_id="ds-1",
+        blocks_api=blocks_api,
+        max_payload_bytes=50,
+    )
+    children = [{"type": "summary", "content": "x" * 200}]
+
+    with pytest.raises(NotionSyncError) as exc_info:
+        adapter.replace_body(page_id="p-1", children=children)
+
+    assert exc_info.value.error_type == "payload_too_large"
+    assert exc_info.value.retryable is False
+    assert len(blocks_api.children.append_calls) == 0
+
+
+def test_replace_body_chunking_still_works():
+    """replace_body chunking works normally when within byte limits."""
+    blocks_api = FakeBlocksAPI(existing_blocks=[])
+    adapter = NotionAdapter(
+        client=FakeNotionClient(),
+        data_source_id="ds-1",
+        blocks_api=blocks_api,
+        max_payload_bytes=500_000,
+    )
+    # 55 sections × 2 blocks = 110 blocks → 2 chunks (100 + 10)
+    children = [{"type": f"s{i}", "content": f"c{i}"} for i in range(55)]
+
+    adapter.replace_body(page_id="p-1", children=children)
+
+    assert len(blocks_api.children.append_calls) == 2
+    assert len(blocks_api.children.append_calls[0]["children"]) == 100
+    assert len(blocks_api.children.append_calls[1]["children"]) == 10
