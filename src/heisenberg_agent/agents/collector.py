@@ -42,11 +42,16 @@ logger = get_logger()
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    """Parse ISO datetime string to datetime object."""
+    """Parse datetime string to datetime object.
+
+    Supports: ISO format (2026-03-31), dot format (2026.03.31).
+    """
     if not value:
         return None
+    # Normalize dot-separated dates (2026.03.31 → 2026-03-31)
+    normalized = value.strip().replace(".", "-")
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(normalized)
     except (ValueError, TypeError):
         return None
 

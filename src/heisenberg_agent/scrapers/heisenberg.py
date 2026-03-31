@@ -125,9 +125,17 @@ def parse_detail_page(html: str, selectors: dict[str, Any]) -> DetailResult:
             if src:
                 image_urls.append(str(src))
 
+    # Author from researcher_profile section
+    author = None
+    author_el = soup.select_one(sel.get("author", ""))
+    if author_el:
+        raw = author_el.get_text(strip=True)
+        # Strip "프로필 보기" suffix
+        author = raw.replace("프로필 보기", "").strip() or None
+
     return DetailResult(
         title=title_el.get_text(strip=True) if title_el else "",
-        author=None,  # author is not in detail page header; available via researcher_profile section
+        author=author,
         category=category,
         published_at=published_at,
         rendered_html=html,

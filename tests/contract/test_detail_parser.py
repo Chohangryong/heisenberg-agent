@@ -20,10 +20,10 @@ def test_extracts_title():
     assert result.title == "GTC 2026 핵심 정리"
 
 
-def test_author_is_none():
-    """Author is not in detail page header; available via researcher_profile section."""
+def test_author_from_profile():
+    """Author extracted from researcher_profile h4 element."""
     result = parse_detail_page(_html(), _selectors())
-    assert result.author is None
+    assert result.author is not None
 
 
 def test_extracts_category():
