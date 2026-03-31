@@ -364,7 +364,15 @@ class SyncAgent:
                     children=payload["body"],
                 )
             else:
-                # Create path: properties + body in single API call
+                # Create path: no adapter-level retry (non-idempotent).
+                # If create succeeds but response/save fails, next run
+                # will create a duplicate page (orphan risk).
+                logger.warning(
+                    "sync.notion.create_orphan_risk",
+                    article_id=job.article_id,
+                    job_id=job.id,
+                    url=payload["properties"].get("url"),
+                )
                 page_id = self._notion.create_page(
                     properties=payload["properties"],
                     children=payload["body"],

@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from heisenberg_agent.utils.logger import get_logger
 
@@ -116,6 +122,42 @@ class RetryAfterError(NotionSyncError):
             message, error_type="rate_limit", retryable=True,
         )
         self.retry_after = retry_after
+
+
+# ---------------------------------------------------------------------------
+# Adapter-level retry (update_page, replace_body only — NOT create_page)
+# ---------------------------------------------------------------------------
+
+_TRANSIENT_ERROR_TYPES = frozenset({
+    "server_error",      # 500, 502, 503, 504
+    "conflict",          # 409
+    "io_error",          # OSError family
+    "timeout",           # TimeoutError
+    "connection_error",  # ConnectionError
+})
+
+
+def _is_notion_transient(error: BaseException) -> bool:
+    """Return True for errors worth retrying at the adapter level.
+
+    Uses an explicit allowlist of error_type values.
+    Rate limit (429) is NOT retried here — it propagates to the
+    circuit breaker in SyncAgent._process_target.
+    """
+    return (
+        isinstance(error, NotionSyncError)
+        and error.error_type in _TRANSIENT_ERROR_TYPES
+    )
+
+
+_RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=10)
+
+_RETRY_DECORATOR = retry(
+    retry=retry_if_exception(_is_notion_transient),
+    stop=stop_after_attempt(3),
+    wait=_RETRY_WAIT,
+    reraise=True,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +281,7 @@ class NotionAdapter:
         except Exception as e:
             self._raise_classified(e)
 
+    @_RETRY_DECORATOR
     def update_page(
         self,
         page_id: str,
@@ -263,6 +306,7 @@ class NotionAdapter:
         except Exception as e:
             self._raise_classified(e)
 
+    @_RETRY_DECORATOR
     def replace_body(
         self,
         page_id: str,

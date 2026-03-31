@@ -530,3 +530,115 @@ def test_retry_after_error_carries_attributes():
     assert err.error_type == "rate_limit"
     assert err.retryable is True
     assert err.retry_after == 120
+
+
+# ---------------------------------------------------------------------------
+# Adapter-level transient retry
+# ---------------------------------------------------------------------------
+
+
+class _TransientThenSuccessClient:
+    """Fails N times with a transient error, then succeeds."""
+
+    def __init__(self, fail_count: int) -> None:
+        self._fail_count = fail_count
+        self._call_count = 0
+
+    def pages_create(self, **kwargs):
+        self._call_count += 1
+        if self._call_count <= self._fail_count:
+            raise FakeAPIError("bad gateway", status=502)
+        return {"id": "page-new"}
+
+    def pages_update(self, page_id, **kwargs):
+        self._call_count += 1
+        if self._call_count <= self._fail_count:
+            raise FakeAPIError("bad gateway", status=502)
+        return {"id": page_id}
+
+
+class _TransientThenSuccessBlocksChildrenAPI:
+    """blocks.children API that fails N times on append, then succeeds."""
+
+    def __init__(self, fail_count: int) -> None:
+        self._fail_count = fail_count
+        self._append_call_count = 0
+
+    def list(self, block_id, **kwargs):
+        return {"results": [], "has_more": False}
+
+    def append(self, block_id, **kwargs):
+        self._append_call_count += 1
+        if self._append_call_count <= self._fail_count:
+            raise FakeAPIError("internal server error", status=500)
+        return {"results": []}
+
+
+class _TransientThenSuccessBlocksAPI:
+    def __init__(self, fail_count: int) -> None:
+        self.children = _TransientThenSuccessBlocksChildrenAPI(fail_count)
+        self.delete_calls: list[str] = []
+
+    def delete(self, block_id):
+        self.delete_calls.append(block_id)
+        return {}
+
+
+def _patch_retry_no_wait(monkeypatch):
+    """Replace retry wait strategy with no-wait for fast tests.
+
+    Patches the wait object on the bound retry state of each decorated method.
+    """
+    from tenacity import wait_none
+
+    no_wait = wait_none()
+    for method_name in ("update_page", "replace_body"):
+        method = getattr(NotionAdapter, method_name)
+        if hasattr(method, "retry"):
+            monkeypatch.setattr(method.retry, "wait", no_wait)
+
+
+def test_update_page_retries_on_transient_error(monkeypatch):
+    """update_page retries on transient server_error and succeeds."""
+    _patch_retry_no_wait(monkeypatch)
+    client = _TransientThenSuccessClient(fail_count=2)
+    adapter = _make_adapter(client)
+
+    page_id = adapter.update_page(page_id="p-1", properties={"title": "T"})
+
+    assert page_id == "p-1"
+    assert client._call_count == 3  # 2 failures + 1 success
+
+
+def test_replace_body_retries_on_transient_error(monkeypatch):
+    """replace_body retries on transient server_error and succeeds."""
+    _patch_retry_no_wait(monkeypatch)
+    blocks_api = _TransientThenSuccessBlocksAPI(fail_count=1)
+    adapter = _make_adapter(blocks_api=blocks_api)
+
+    adapter.replace_body(page_id="p-1", children=[{"type": "s", "content": "t"}])
+
+    assert blocks_api.children._append_call_count == 2  # 1 failure + 1 success
+
+
+def test_create_page_does_not_retry_on_transient_error(monkeypatch):
+    """create_page has no adapter-level retry — transient error propagates immediately."""
+    _patch_retry_no_wait(monkeypatch)
+    client = _TransientThenSuccessClient(fail_count=1)
+    adapter = _make_adapter(client)
+
+    with pytest.raises(NotionSyncError) as exc_info:
+        adapter.create_page(properties={"title": "T"}, children=[])
+
+    assert exc_info.value.error_type == "server_error"
+    assert client._call_count == 1  # no retry
+
+
+def test_rate_limit_not_retried_by_adapter(monkeypatch):
+    """429 rate_limit is NOT retried — propagates as RetryAfterError."""
+    _patch_retry_no_wait(monkeypatch)
+    client = FakeNotionClient(error=FakeAPIError("rate limited", status=429))
+    adapter = _make_adapter(client)
+
+    with pytest.raises(RetryAfterError):
+        adapter.update_page(page_id="p-1", properties={"title": "T"})
