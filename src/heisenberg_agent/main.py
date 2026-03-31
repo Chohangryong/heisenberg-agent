@@ -1,6 +1,7 @@
 """Heisenberg Agent — CLI entry point."""
 
 import argparse
+import os
 
 from heisenberg_agent.settings import load_settings
 from heisenberg_agent.storage.db import create_db_engine, get_session_factory, init_db
@@ -18,6 +19,12 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
+
+    # Export API keys to os.environ so LiteLLM can find them
+    if settings.anthropic_api_key:
+        os.environ.setdefault("ANTHROPIC_API_KEY", settings.anthropic_api_key)
+    if settings.openai_api_key:
+        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
 
     setup_logging(
         level=settings.logging.level,
