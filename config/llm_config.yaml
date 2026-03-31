@@ -1,13 +1,13 @@
 analysis:
-  provider: "anthropic"
-  model: "claude-sonnet-4-6"
+  provider: "openai"
+  model: "gpt-5.4"
   max_tokens: 4096
   temperature: 0.2
 
 # Fallback chain: tried in order when primary fails
 fallback:
-  provider: "openai"
-  model: "gpt-4o"
+  provider: "anthropic"
+  model: "claude-sonnet-4-6"
   max_tokens: 4096
 
 fallback_2:
@@ -17,13 +17,13 @@ fallback_2:
 
 # Legacy keys kept for backward compatibility
 summary:
-  provider: "anthropic"
-  model: "claude-sonnet-4-6"
+  provider: "openai"
+  model: "gpt-5.4"
   max_tokens: 4096
   temperature: 0.2
 
 critique:
-  provider: "anthropic"
-  model: "claude-sonnet-4-6"
+  provider: "openai"
+  model: "gpt-5.4"
   max_tokens: 4096
   temperature: 0.3
