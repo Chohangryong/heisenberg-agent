@@ -105,6 +105,7 @@ class SyncAgent:
         )
         articles = list(self._session.execute(stmt).scalars().all())
 
+        ensured_count = 0
         for article in articles:
             vector_hash = None
             notion_hash = None
@@ -134,9 +135,10 @@ class SyncAgent:
                 current_vector_hash=vector_hash,
                 current_notion_hash=notion_hash,
             )
+            ensured_count += 1
 
-        logger.info("sync.jobs_ensured", count=len(articles))
-        return len(articles)
+        logger.info("sync.jobs_ensured", articles_ensured=ensured_count)
+        return ensured_count
 
     # ------------------------------------------------------------------
     # Step 2: Process jobs per target
