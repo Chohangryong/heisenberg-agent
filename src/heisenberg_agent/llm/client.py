@@ -129,7 +129,15 @@ class LLMClient:
         rendered = prompt_template.replace("{article_text}", article_text)
 
         task_config = self._config.get(task_key, {})
-        fallback_config = self._config.get("fallback", {})
+
+        # Build fallback chain: fallback, fallback_2, fallback_3, ...
+        fallback_chain: list[dict[str, Any]] = []
+        if self._config.get("fallback"):
+            fallback_chain.append(self._config["fallback"])
+        for i in range(2, 10):
+            key = f"fallback_{i}"
+            if self._config.get(key):
+                fallback_chain.append(self._config[key])
 
         # Try primary model
         try:
@@ -142,22 +150,23 @@ class LLMClient:
                 error=str(primary_err),
             )
 
-        # Try fallback model
-        if fallback_config:
+        # Try fallback chain
+        last_err = primary_err
+        for fb_config in fallback_chain:
             try:
-                return self._do_call(rendered, response_model, fallback_config, fallback_used=True)
-            except Exception as fallback_err:
-                logger.error(
+                return self._do_call(rendered, response_model, fb_config, fallback_used=True)
+            except Exception as fb_err:
+                logger.warning(
                     "llm.fallback_failed",
                     task=task_key,
-                    model=fallback_config.get("model"),
-                    error=str(fallback_err),
+                    model=fb_config.get("model"),
+                    error=str(fb_err),
                 )
-                raise LLMError(
-                    f"Both primary and fallback failed for {task_key}"
-                ) from fallback_err
+                last_err = fb_err
 
-        raise LLMError(f"Primary failed and no fallback configured for {task_key}")
+        raise LLMError(
+            f"All models failed for {task_key}"
+        ) from last_err
 
     def _do_call(
         self,
@@ -170,7 +179,7 @@ class LLMClient:
         """Execute a single LLM call with structured output."""
         import litellm
 
-        model = model_config.get("model", "claude-sonnet-4-5")
+        model = model_config.get("model", "claude-sonnet-4-6")
         provider = model_config.get("provider", "anthropic")
         max_tokens = model_config.get("max_tokens", 1800)
         temperature = model_config.get("temperature", 0.2)

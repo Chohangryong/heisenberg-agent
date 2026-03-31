@@ -45,6 +45,13 @@ class FakeCollectorAgent:
         )
 
 
+class _FakeArticle:
+    """Minimal article stub for fake pipeline tests."""
+    def __init__(self, id: int = 1):
+        self.id = id
+        self.current_analysis_id = id
+
+
 class FakeAnalyzerAgent:
     def __init__(
         self, analyzed: int = 0, skipped: int = 0, failed: int = 0,
@@ -64,6 +71,24 @@ class FakeAnalyzerAgent:
             "failed": self._failed,
         }
 
+    def find_targets(self):
+        if self._fatal:
+            raise RuntimeError(self._fatal)
+        total = self._analyzed + self._skipped + self._failed
+        return [_FakeArticle(i) for i in range(total)]
+
+    def analyze_one(self, article):
+        if self._analyzed > 0:
+            self._analyzed -= 1
+            return "analyzed"
+        if self._skipped > 0:
+            self._skipped -= 1
+            return "skipped"
+        if self._failed > 0:
+            self._failed -= 1
+            return "failed"
+        return "skipped"
+
 
 class FakeSyncAgent:
     def __init__(
@@ -74,6 +99,7 @@ class FakeSyncAgent:
         self._skipped = skipped
         self._failed = failed
         self._fatal = fatal
+        self._notion_rate_limited = False
 
     def run(self, **kw):
         if self._fatal:
@@ -84,6 +110,20 @@ class FakeSyncAgent:
             "skipped": self._skipped,
             "failed": self._failed,
         }
+
+    def sync_one(self, article):
+        if self._fatal:
+            raise RuntimeError(self._fatal)
+        result = {"ensured": 0, "synced": 0, "skipped": 0, "failed": 0, "deferred": 0}
+        if self._synced > 0:
+            self._synced -= 1
+            result["ensured"] = 1
+            result["synced"] = 2  # vector + notion
+        return result
+
+    @property
+    def is_notion_rate_limited(self):
+        return self._notion_rate_limited
 
 
 # ---------------------------------------------------------------------------

@@ -149,25 +149,71 @@ class Pipeline:
     def _execute_stages(self, run_id: int) -> list[StageSummary]:
         """Execute all stages, collecting summaries.
 
-        Each stage runs regardless of prior stage failure.
+        Flow: collect ALL → per-article analyze+sync (incremental).
         """
         summaries: list[StageSummary] = []
 
-        # Stage 1: Collect
+        # Stage 1: Collect (batch)
         summaries.append(self._run_stage(
             "collect", lambda: self._run_collector(run_id),
         ))
 
-        # Stage 2: Analyze
-        summaries.append(self._run_stage(
-            "analyze", lambda: self._run_analyzer(run_id),
-        ))
-
-        # Stage 3: Sync (returns multiple summaries for vector/notion)
-        sync_summaries = self._run_sync_stage(run_id)
-        summaries.extend(sync_summaries)
+        # Stage 2+3: Incremental analyze → sync per article
+        try:
+            analyze_summary, sync_summary = self._run_incremental_analyze_sync()
+            summaries.append(analyze_summary)
+            summaries.append(sync_summary)
+        except Exception as e:
+            logger.error("pipeline.incremental_fatal", error=str(e))
+            summaries.append(StageSummary(stage="analyze", fatal_error=str(e)[:500]))
+            summaries.append(StageSummary(stage="sync"))
 
         return summaries
+
+    def _run_incremental_analyze_sync(
+        self,
+    ) -> tuple[StageSummary, StageSummary]:
+        """Analyze one article at a time, syncing each immediately after."""
+        a_stats = {"analyzed": 0, "skipped": 0, "failed": 0}
+        s_stats = {"ensured": 0, "synced": 0, "skipped": 0, "failed": 0, "deferred": 0}
+
+        targets = self._analyzer.find_targets()
+        logger.info("pipeline.incremental_targets", count=len(targets))
+
+        for article in targets:
+            # Analyze
+            result = self._analyzer.analyze_one(article)
+            a_stats[result] += 1
+
+            # Sync immediately if analysis succeeded
+            if result == "analyzed":
+                sync_result = self._syncer.sync_one(article)
+                for k in s_stats:
+                    s_stats[k] += sync_result.get(k, 0)
+
+                # Stop Notion sync if rate limited
+                if self._syncer.is_notion_rate_limited:
+                    logger.warning("pipeline.notion_rate_limited_skipping_sync")
+
+        logger.info("analyzer.run_finished", **a_stats)
+        logger.info("sync.run_finished", **s_stats)
+
+        return (
+            StageSummary(
+                stage="analyze",
+                processed=a_stats["analyzed"] + a_stats["skipped"] + a_stats["failed"],
+                succeeded=a_stats["analyzed"],
+                failed=a_stats["failed"],
+                skipped=a_stats["skipped"],
+            ),
+            StageSummary(
+                stage="sync",
+                processed=s_stats["synced"] + s_stats["skipped"] + s_stats["failed"],
+                succeeded=s_stats["synced"],
+                failed=s_stats["failed"],
+                skipped=s_stats["skipped"],
+            ),
+        )
 
     def _run_stage(
         self, stage_name: str, fn: Any,

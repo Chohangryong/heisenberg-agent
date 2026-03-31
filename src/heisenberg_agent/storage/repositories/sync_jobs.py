@@ -192,6 +192,37 @@ def find_pending_jobs(
     return list(session.execute(stmt).scalars().all())
 
 
+def find_pending_jobs_for_article(
+    session: Session,
+    target: str,
+    article_id: int,
+    max_attempts: int | None = None,
+) -> list[SyncJob]:
+    """Find pending jobs for a specific article and target."""
+    now = _now_naive_utc()
+    stale_cutoff = now - timedelta(minutes=STALE_LOCK_MINUTES)
+
+    if max_attempts is None:
+        max_attempts = _max_attempts_for(target)
+
+    stmt = (
+        select(SyncJob)
+        .where(
+            SyncJob.target == target,
+            SyncJob.article_id == article_id,
+            SyncJob.status.in_(["pending", "failed"]),
+            SyncJob.attempt_count < max_attempts,
+        )
+        .where(
+            (SyncJob.next_retry_at == None) | (SyncJob.next_retry_at <= now)  # noqa: E711
+        )
+        .where(
+            (SyncJob.locked_at == None) | (SyncJob.locked_at < stale_cutoff)  # noqa: E711
+        )
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # Lock acquire / release (atomic CAS)
 # ---------------------------------------------------------------------------
