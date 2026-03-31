@@ -12,7 +12,7 @@ fallback:
 
 fallback_2:
   provider: "gemini"
-  model: "gemini-2.5-pro"
+  model: "gemini-3.0-pro"
   max_tokens: 4096
 
 # Legacy keys kept for backward compatibility
