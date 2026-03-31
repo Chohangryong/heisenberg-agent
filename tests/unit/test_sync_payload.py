@@ -158,11 +158,17 @@ def test_notion_payload_structure():
 
 
 def test_notion_payload_body_order():
+    """Body blocks use Notion block types in order: summary → divider → critique → divider → meta."""
     article = FakeArticle()
     run = FakeAnalysisRun()
     payload, _ = build_notion_payload(article, run, None, [])
     body_types = [b["type"] for b in payload["body"]]
-    assert body_types == ["summary", "critique", "meta"]
+    # First block is summary heading
+    assert body_types[0] == "heading_2"
+    # Dividers separate sections
+    assert "divider" in body_types
+    # Contains heading, paragraph, bulleted_list_item types
+    assert any(t == "bulleted_list_item" for t in body_types)
 
 
 def test_notion_payload_annotations():

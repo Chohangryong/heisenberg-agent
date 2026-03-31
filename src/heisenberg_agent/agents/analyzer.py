@@ -71,6 +71,87 @@ class AnalyzerAgent:
         """Find articles that need analysis."""
         return analysis_repo.find_analysis_targets(self._session)
 
+    def prepare_input(self, article: Article) -> tuple[str, dict[str, Any]] | None:
+        """Prepare LLM input text and base run data (uses session, main thread only).
+
+        Returns:
+            (input_text, base_run_data) or None if should skip/fail.
+        """
+        analysis_cfg = self._settings.analysis
+        current_run = analysis_repo.get_current_run(self._session, article)
+
+        decision = analysis_repo.needs_analysis(
+            article,
+            current_run,
+            analysis_version=analysis_cfg.analysis_version,
+            prompt_bundle_version=analysis_cfg.prompt_bundle_version,
+        )
+
+        if not decision.should_analyze:
+            analysis_repo.record_skip(self._session, article, decision.reason)
+            return None
+
+        logger.info("analyzer.analyzing", slug=article.slug, reason=decision.reason)
+
+        db_sections = analysis_repo.get_article_sections(self._session, article.id)
+        section_data = [
+            SectionData(
+                ordinal=s.ordinal,
+                section_kind=s.section_kind,
+                section_title=s.section_title,
+                access_tier=s.access_tier or "unknown",
+                is_gated_notice=s.is_gated_notice or False,
+                body_text=s.body_text or "",
+                body_html=s.body_html or "",
+                content_hash=s.content_hash or "",
+                selector_used=s.selector_used or "",
+            )
+            for s in db_sections
+        ]
+
+        max_chars = self._settings.analysis.__dict__.get("max_input_chars", 12000)
+        input_text = build_analysis_input(section_data, max_chars=max_chars)
+
+        if not input_text.strip():
+            logger.warning("analyzer.empty_input", slug=article.slug)
+            return None
+
+        base_run_data = {
+            "source_content_hash": article.content_hash or "",
+            "analysis_version": analysis_cfg.analysis_version,
+            "prompt_bundle_version": analysis_cfg.prompt_bundle_version,
+        }
+
+        return input_text, base_run_data
+
+    def call_llm(self, input_text: str) -> LLMResult:
+        """Call LLM with prepared input (thread-safe, no session usage).
+
+        Raises LLMError on failure.
+        """
+        return self._llm.call(
+            "analysis.md", input_text, AnalysisResult, task_key="analysis",
+        )
+
+    def save_result(
+        self,
+        article: Article,
+        base_run_data: dict[str, Any],
+        llm_result: LLMResult | None,
+        error: Exception | None,
+    ) -> str:
+        """Save analysis result to DB (main thread only).
+
+        Returns "analyzed" or "failed".
+        """
+        if error is not None:
+            logger.error("analyzer.llm_failed", slug=article.slug, error=str(error))
+            self._save_failed(article, base_run_data, error, analysis_result=llm_result)
+            return "failed"
+
+        self._save_success(article, base_run_data, llm_result)
+        return "analyzed"
+
     def analyze_one(self, article: Article) -> str:
         """Analyze a single article.
 

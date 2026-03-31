@@ -77,6 +77,24 @@ class FakeAnalyzerAgent:
         total = self._analyzed + self._skipped + self._failed
         return [_FakeArticle(i) for i in range(total)]
 
+    def prepare_input(self, article):
+        if self._skipped > 0:
+            self._skipped -= 1
+            return None  # skip
+        return ("fake input text", {"source_content_hash": "", "analysis_version": "v1", "prompt_bundle_version": "v1"})
+
+    def call_llm(self, input_text):
+        return "fake_llm_result"
+
+    def save_result(self, article, base_run_data, llm_result, error):
+        if self._analyzed > 0:
+            self._analyzed -= 1
+            return "analyzed"
+        if self._failed > 0:
+            self._failed -= 1
+            return "failed"
+        return "skipped"
+
     def analyze_one(self, article):
         if self._analyzed > 0:
             self._analyzed -= 1

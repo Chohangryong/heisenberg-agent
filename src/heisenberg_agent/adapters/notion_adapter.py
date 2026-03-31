@@ -497,28 +497,39 @@ class NotionAdapter:
     # Block building
     # ------------------------------------------------------------------
 
+    _NOTION_BLOCK_TYPES = frozenset({
+        "heading_1", "heading_2", "heading_3",
+        "paragraph", "bulleted_list_item", "numbered_list_item",
+        "divider", "callout", "quote", "toggle",
+    })
+
     def _build_notion_blocks(self, body: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert body blocks to Notion block format.
 
-        Each section becomes a heading_2 + paragraph blocks.
-        Text is chunked to 2000 chars per block (Notion limit).
+        Supports two formats:
+        1. Native Notion blocks (type in _NOTION_BLOCK_TYPES) — passed through.
+        2. Legacy format (type is section name with "content" key) — converted.
         """
         blocks: list[dict[str, Any]] = []
         for section in body:
-            content = section.get("content", "")
-            blocks.append({
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"text": {"content": section.get("type", "")}}]
-                },
-            })
-            for chunk in _chunk_text(content, _TEXT_CHUNK_SIZE):
+            block_type = section.get("type", "")
+            if block_type in self._NOTION_BLOCK_TYPES:
+                blocks.append(section)
+            else:
+                content = section.get("content", "")
                 blocks.append({
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{"text": {"content": chunk}}]
+                    "type": "heading_2",
+                    "heading_2": {
+                        "rich_text": [{"text": {"content": block_type}}]
                     },
                 })
+                for chunk in _chunk_text(content, _TEXT_CHUNK_SIZE):
+                    blocks.append({
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [{"text": {"content": chunk}}]
+                        },
+                    })
         return blocks
 
 
