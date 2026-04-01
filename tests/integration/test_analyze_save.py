@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from heisenberg_agent.agents.analyzer import AnalyzerAgent
 from heisenberg_agent.llm.client import LLMClient, LLMError, LLMResult, UsageMeta
-from heisenberg_agent.llm.schemas import CritiqueResult, SummaryResult
+from heisenberg_agent.llm.schemas import AnalysisResult
 from heisenberg_agent.storage.models import (
     AnalysisRun,
     Article,
@@ -28,7 +28,7 @@ from heisenberg_agent.utils.dt import now_utc
 # Fixtures
 # ---------------------------------------------------------------------------
 
-VALID_SUMMARY = SummaryResult(
+VALID_ANALYSIS = AnalysisResult(
     core_thesis="AI inference is improving",
     supporting_points=["Blackwell Ultra", "NVLink 7"],
     conclusion="Nvidia leads",
@@ -36,15 +36,12 @@ VALID_SUMMARY = SummaryResult(
     importance="high",
     confidence=0.85,
     evidence_spans=[],
-)
-
-VALID_CRITIQUE = CritiqueResult(
     logic_gaps=["No competitor comparison"],
     missing_views=["AMD perspective"],
     claims_to_verify=["3x throughput improvement"],
     interest_analysis="Nvidia keynote is promotional",
     overall_assessment="Solid but one-sided",
-    confidence=0.7,
+    critique_confidence=0.7,
 )
 
 
@@ -54,12 +51,11 @@ class FakeLLMClient:
     def __init__(self, *, should_fail: bool = False) -> None:
         self._should_fail = should_fail
 
-    def call(self, prompt_name, article_text, response_model, *, task_key="summary"):
+    def call(self, prompt_name, article_text, response_model, *, task_key="analysis"):
         if self._should_fail:
             raise LLMError(f"Fake LLM failure for {task_key}")
-        data = VALID_SUMMARY if response_model is SummaryResult else VALID_CRITIQUE
         return LLMResult(
-            data=data,
+            data=VALID_ANALYSIS,
             usage=UsageMeta(
                 provider="fake", model="fake-model",
                 input_tokens=100, output_tokens=50,

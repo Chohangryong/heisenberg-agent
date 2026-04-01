@@ -11,6 +11,8 @@ You are a critical analyst. Your job is to find weaknesses, gaps, and unverified
 
 Be specific. Reference actual content from the article when possible.
 
+**IMPORTANT: All output text (logic_gaps, missing_views, claims_to_verify, interest_analysis, overall_assessment) MUST be written in Korean (한국어).**
+
 ## Article
 
 {article_text}

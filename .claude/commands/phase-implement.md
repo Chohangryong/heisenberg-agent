@@ -1,9 +1,3 @@
----
-name: phase-implement
-description: 구현 단계. generator subagent 호출, 코드 작성, 테스트 실행.
-user-invocable: true
----
-
 # Phase: Implement
 
 planner 계획이 승인된 후 실행하는 구현 워크플로우다.

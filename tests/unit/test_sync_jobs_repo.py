@@ -205,6 +205,36 @@ def test_find_pending_jobs(db_session: Session):
     assert len(notion_jobs) == 1
 
 
+def test_find_pending_jobs_ordered_by_created_at(db_session: Session):
+    """Jobs are returned oldest-first (created_at ASC)."""
+    a1 = _create_article(db_session, slug="old")
+    a2 = _create_article(db_session, slug="mid")
+    a3 = _create_article(db_session, slug="new")
+
+    # Create jobs with explicit created_at to guarantee ordering
+    j_new = SyncJob(
+        article_id=a3.id, target="vector", status="pending",
+        created_at=now_utc() + timedelta(minutes=10),
+    )
+    j_old = SyncJob(
+        article_id=a1.id, target="vector", status="pending",
+        created_at=now_utc() - timedelta(minutes=10),
+    )
+    j_mid = SyncJob(
+        article_id=a2.id, target="vector", status="pending",
+        created_at=now_utc(),
+    )
+    # Insert in non-chronological order to verify ORDER BY, not insert order
+    db_session.add_all([j_new, j_old, j_mid])
+    db_session.commit()
+
+    jobs = sync_repo.find_pending_jobs(db_session, "vector")
+    assert len(jobs) == 3
+    assert jobs[0].article_id == a1.id  # oldest
+    assert jobs[1].article_id == a2.id  # middle
+    assert jobs[2].article_id == a3.id  # newest
+
+
 def test_find_pending_skips_future_retry(db_session: Session):
     article = _create_article(db_session)
     job = SyncJob(

@@ -10,6 +10,7 @@ They do NOT modify CollectionRun directly.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
@@ -149,25 +150,104 @@ class Pipeline:
     def _execute_stages(self, run_id: int) -> list[StageSummary]:
         """Execute all stages, collecting summaries.
 
-        Each stage runs regardless of prior stage failure.
+        Flow: collect ALL → per-article analyze+sync (incremental).
         """
         summaries: list[StageSummary] = []
 
-        # Stage 1: Collect
+        # Stage 1: Collect (batch)
         summaries.append(self._run_stage(
             "collect", lambda: self._run_collector(run_id),
         ))
 
-        # Stage 2: Analyze
-        summaries.append(self._run_stage(
-            "analyze", lambda: self._run_analyzer(run_id),
-        ))
-
-        # Stage 3: Sync (returns multiple summaries for vector/notion)
-        sync_summaries = self._run_sync_stage(run_id)
-        summaries.extend(sync_summaries)
+        # Stage 2+3: Incremental analyze → sync per article
+        try:
+            analyze_summary, sync_summary = self._run_incremental_analyze_sync()
+            summaries.append(analyze_summary)
+            summaries.append(sync_summary)
+        except Exception as e:
+            logger.error("pipeline.incremental_fatal", error=str(e))
+            summaries.append(StageSummary(stage="analyze", fatal_error=str(e)[:500]))
+            summaries.append(StageSummary(stage="sync", fatal_error=str(e)[:500]))
 
         return summaries
+
+    _LLM_MAX_WORKERS = 10  # Anthropic Tier1 50RPM min; 10 concurrent is safe
+
+    def _run_incremental_analyze_sync(
+        self,
+    ) -> tuple[StageSummary, StageSummary]:
+        """Parallel LLM analysis, then sequential DB save + sync.
+
+        Phase 1: Prepare inputs (main thread, session) + parallel LLM calls
+        Phase 2: Save results + sync per article (main thread, session)
+        """
+        a_stats = {"analyzed": 0, "skipped": 0, "failed": 0}
+        s_stats = {"ensured": 0, "synced": 0, "skipped": 0, "failed": 0, "deferred": 0}
+
+        targets = self._analyzer.find_targets()
+        logger.info("pipeline.incremental_targets", count=len(targets))
+
+        # Phase 1: Prepare inputs (main thread) and collect LLM tasks
+        llm_tasks: list[tuple[Any, str, dict[str, Any]]] = []  # (article, input_text, base_data)
+        for article in targets:
+            prepared = self._analyzer.prepare_input(article)
+            if prepared is None:
+                a_stats["skipped"] += 1
+                continue
+            input_text, base_run_data = prepared
+            llm_tasks.append((article, input_text, base_run_data))
+
+        # Phase 1b: Parallel LLM calls (thread-safe, no session)
+        llm_results: dict[int, tuple[Any, Exception | None]] = {}
+        if llm_tasks:
+            with ThreadPoolExecutor(max_workers=self._LLM_MAX_WORKERS) as pool:
+                futures = {
+                    pool.submit(self._analyzer.call_llm, input_text): (article, base_data)
+                    for article, input_text, base_data in llm_tasks
+                }
+                for future in as_completed(futures):
+                    article, base_data = futures[future]
+                    try:
+                        result = future.result()
+                        llm_results[article.id] = (result, None)
+                    except Exception as e:
+                        llm_results[article.id] = (None, e)
+
+        # Phase 2: Sequential DB save + sync (main thread)
+        notion_blocked = False
+        for article, _input_text, base_run_data in llm_tasks:
+            llm_result, error = llm_results.get(article.id, (None, None))
+            result = self._analyzer.save_result(article, base_run_data, llm_result, error)
+            a_stats[result] += 1
+
+            if result == "analyzed" and not notion_blocked:
+                sync_result = self._syncer.sync_one(article)
+                for k in s_stats:
+                    s_stats[k] += sync_result.get(k, 0)
+
+                if self._syncer.is_notion_rate_limited:
+                    logger.warning("pipeline.notion_rate_limited_skipping_sync")
+                    notion_blocked = True
+
+        logger.info("analyzer.run_finished", **a_stats)
+        logger.info("sync.run_finished", **s_stats)
+
+        return (
+            StageSummary(
+                stage="analyze",
+                processed=a_stats["analyzed"] + a_stats["skipped"] + a_stats["failed"],
+                succeeded=a_stats["analyzed"],
+                failed=a_stats["failed"],
+                skipped=a_stats["skipped"],
+            ),
+            StageSummary(
+                stage="sync",
+                processed=s_stats["synced"] + s_stats["skipped"] + s_stats["failed"],
+                succeeded=s_stats["synced"],
+                failed=s_stats["failed"],
+                skipped=s_stats["skipped"],
+            ),
+        )
 
     def _run_stage(
         self, stage_name: str, fn: Any,

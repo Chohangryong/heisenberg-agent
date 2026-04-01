@@ -69,12 +69,18 @@ class PlaywrightAdapter:
     def _create_context(self) -> BrowserContext:
         """Create context, restoring storage_state if available."""
         assert self._browser is not None
+        ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/145.0.0.0 Safari/537.36"
+        )
         if self._auth_state_path.exists():
             logger.info("auth.loading_state", path=str(self._auth_state_path))
             return self._browser.new_context(
-                storage_state=str(self._auth_state_path)
+                storage_state=str(self._auth_state_path),
+                user_agent=ua,
             )
-        return self._browser.new_context()
+        return self._browser.new_context(user_agent=ua)
 
     # ------------------------------------------------------------------
     # Authentication

@@ -12,6 +12,8 @@ Analyze the following article and produce a structured summary.
 6. Rate your confidence from 0.0 to 1.0.
 7. For each key point, provide an evidence span referencing the section it came from.
 
+**IMPORTANT: All output text (core_thesis, supporting_points, conclusion, keywords, evidence_spans) MUST be written in Korean (한국어).**
+
 ## Article
 
 {article_text}

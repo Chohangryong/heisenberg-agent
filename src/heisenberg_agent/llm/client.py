@@ -96,10 +96,11 @@ class LLMClient:
         """
         Args:
             config: LLM config dict with keys like:
-                summary: {provider, model, max_tokens, temperature}
-                critique: {provider, model, max_tokens, temperature}
-                fallback: {provider, model}
-                max_input_chars: int (default 12000)
+                analysis: {provider, model, max_tokens, temperature}
+                fallback: {provider, model, max_tokens}
+                fallback_2: {provider, model, max_tokens}  (optional chain)
+                summary: (legacy) {provider, model, max_tokens, temperature}
+                critique: (legacy) {provider, model, max_tokens, temperature}
         """
         self._config = config
 
@@ -129,12 +130,22 @@ class LLMClient:
         rendered = prompt_template.replace("{article_text}", article_text)
 
         task_config = self._config.get(task_key, {})
-        fallback_config = self._config.get("fallback", {})
+
+        # Build fallback chain: fallback, fallback_2, fallback_3, ...
+        fallback_chain: list[dict[str, Any]] = []
+        if self._config.get("fallback"):
+            fallback_chain.append(self._config["fallback"])
+        for i in range(2, 10):
+            key = f"fallback_{i}"
+            if self._config.get(key):
+                fallback_chain.append(self._config[key])
 
         # Try primary model
+        last_err: Exception | None = None
         try:
             return self._do_call(rendered, response_model, task_config, fallback_used=False)
         except Exception as primary_err:
+            last_err = primary_err
             logger.warning(
                 "llm.primary_failed",
                 task=task_key,
@@ -142,22 +153,25 @@ class LLMClient:
                 error=str(primary_err),
             )
 
-        # Try fallback model
-        if fallback_config:
+        # Try fallback chain
+        for fb_config in fallback_chain:
             try:
-                return self._do_call(rendered, response_model, fallback_config, fallback_used=True)
-            except Exception as fallback_err:
-                logger.error(
+                return self._do_call(rendered, response_model, fb_config, fallback_used=True)
+            except Exception as fb_err:
+                logger.warning(
                     "llm.fallback_failed",
                     task=task_key,
-                    model=fallback_config.get("model"),
-                    error=str(fallback_err),
+                    model=fb_config.get("model"),
+                    error=str(fb_err),
                 )
-                raise LLMError(
-                    f"Both primary and fallback failed for {task_key}"
-                ) from fallback_err
+                last_err = fb_err
 
-        raise LLMError(f"Primary failed and no fallback configured for {task_key}")
+        raise LLMError(
+            f"All models failed for {task_key}"
+        ) from last_err
+
+    _MAX_RETRIES = 10
+    _RETRY_BASE_DELAY = 2.0  # seconds, exponential backoff
 
     def _do_call(
         self,
@@ -167,10 +181,10 @@ class LLMClient:
         *,
         fallback_used: bool,
     ) -> LLMResult:
-        """Execute a single LLM call with structured output."""
+        """Execute a single LLM call with structured output and retry."""
         import litellm
 
-        model = model_config.get("model", "claude-sonnet-4-5")
+        model = model_config.get("model", "claude-sonnet-4-6")
         provider = model_config.get("provider", "anthropic")
         max_tokens = model_config.get("max_tokens", 1800)
         temperature = model_config.get("temperature", 0.2)
@@ -180,6 +194,46 @@ class LLMClient:
         ensure_openai_strict_schema(schema)
         schema_name = response_model.__name__
 
+        last_err: Exception | None = None
+        for attempt in range(1, self._MAX_RETRIES + 1):
+            try:
+                return self._execute_completion(
+                    litellm, provider, model, rendered_prompt,
+                    max_tokens, temperature, schema, schema_name,
+                    response_model, fallback_used,
+                )
+            except Exception as e:
+                err_str = str(e).lower()
+                is_transient = "overloaded" in err_str or "rate_limit" in err_str or "529" in err_str or "500" in err_str
+                if not is_transient or attempt == self._MAX_RETRIES:
+                    raise
+                last_err = e
+                delay = min(self._RETRY_BASE_DELAY * (2 ** (attempt - 1)), 30.0)
+                logger.warning(
+                    "llm.retrying",
+                    model=model,
+                    attempt=attempt,
+                    delay=delay,
+                    error=str(e)[:200],
+                )
+                time.sleep(delay)
+
+        raise last_err  # should not reach here
+
+    def _execute_completion(
+        self,
+        litellm: Any,
+        provider: str,
+        model: str,
+        rendered_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        schema: dict[str, Any],
+        schema_name: str,
+        response_model: type[T],
+        fallback_used: bool,
+    ) -> LLMResult:
+        """Single LLM completion attempt."""
         start = time.monotonic()
         response = litellm.completion(
             model=f"{provider}/{model}" if provider else model,

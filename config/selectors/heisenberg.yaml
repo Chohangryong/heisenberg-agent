@@ -15,6 +15,7 @@ detail_page:
   title: "div.single-header h1"
   meta_info: "div.single-header .meta .info"   # text format: "카테고리|날짜"
   content_area: "div.single-content"
+  author: "div.content-profile h4"             # "이름프로필 보기" format
 
 sections:
   researcher_profile: "div.content-profile"

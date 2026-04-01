@@ -242,6 +242,7 @@ class AnalysisRun(Base):
     prompt_bundle_version: Mapped[str] = mapped_column(Text)
 
     # Structured output results
+    analysis_json: Mapped[str | None] = mapped_column(Text, default=None)
     summary_json: Mapped[str | None] = mapped_column(Text, default=None)
     critique_json: Mapped[str | None] = mapped_column(Text, default=None)
 

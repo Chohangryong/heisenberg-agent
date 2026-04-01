@@ -32,6 +32,16 @@ MAX_NOTION_ATTEMPTS = 10
 _EVENT_ERROR_MSG_LIMIT = 200
 
 
+def _now_naive_utc() -> datetime:
+    """Current UTC time as naive datetime for SQLite boundary.
+
+    App/domain code uses aware UTC (``now_utc()``).  This repository talks
+    directly to SQLite which stores datetimes as text without timezone —
+    so every comparison/storage at the DB boundary goes through this helper.
+    """
+    return now_utc().replace(tzinfo=None)
+
+
 def _truncate(msg: str, limit: int = _EVENT_ERROR_MSG_LIMIT) -> tuple[str, bool]:
     """Truncate a message and indicate whether it was truncated."""
     if len(msg) <= limit:
@@ -158,7 +168,7 @@ def find_pending_jobs(
     - not locked (or lock is stale)
     - attempt_count < max_attempts
     """
-    now = now_utc()
+    now = _now_naive_utc()
     stale_cutoff = now - timedelta(minutes=STALE_LOCK_MINUTES)
 
     if max_attempts is None:
@@ -177,6 +187,39 @@ def find_pending_jobs(
         .where(
             (SyncJob.locked_at == None) | (SyncJob.locked_at < stale_cutoff)  # noqa: E711
         )
+        .order_by(SyncJob.created_at.asc())
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
+def find_pending_jobs_for_article(
+    session: Session,
+    target: str,
+    article_id: int,
+    max_attempts: int | None = None,
+) -> list[SyncJob]:
+    """Find pending jobs for a specific article and target."""
+    now = _now_naive_utc()
+    stale_cutoff = now - timedelta(minutes=STALE_LOCK_MINUTES)
+
+    if max_attempts is None:
+        max_attempts = _max_attempts_for(target)
+
+    stmt = (
+        select(SyncJob)
+        .where(
+            SyncJob.target == target,
+            SyncJob.article_id == article_id,
+            SyncJob.status.in_(["pending", "failed"]),
+            SyncJob.attempt_count < max_attempts,
+        )
+        .where(
+            (SyncJob.next_retry_at == None) | (SyncJob.next_retry_at <= now)  # noqa: E711
+        )
+        .where(
+            (SyncJob.locked_at == None) | (SyncJob.locked_at < stale_cutoff)  # noqa: E711
+        )
+        .order_by(SyncJob.created_at.asc())
     )
     return list(session.execute(stmt).scalars().all())
 
@@ -195,8 +238,7 @@ def try_lock(session: Session, job_id: int) -> bool:
     Returns:
         True if lock acquired, False if already locked.
     """
-    # SQLite stores datetimes as naive — use naive for comparison
-    now = datetime.utcnow()
+    now = _now_naive_utc()
     stale_cutoff = now - timedelta(minutes=STALE_LOCK_MINUTES)
 
     result = session.execute(
@@ -214,6 +256,19 @@ def try_lock(session: Session, job_id: int) -> bool:
 def unlock(session: Session, job: SyncJob) -> None:
     """Release lock on a sync job."""
     job.locked_at = None
+    session.commit()
+
+
+def force_unlock(session: Session, job_id: int) -> None:
+    """Release lock via direct UPDATE — safe after rollback.
+
+    Use when session.refresh(job) fails on a detached instance.
+    """
+    session.execute(
+        update(SyncJob)
+        .where(SyncJob.id == job_id)
+        .values(locked_at=None)
+    )
     session.commit()
 
 
@@ -325,11 +380,11 @@ def mark_failed(
     job.status = "failed"
 
     if retry_after_seconds is not None:
-        job.next_retry_at = now_utc() + timedelta(seconds=retry_after_seconds)
+        job.next_retry_at = _now_naive_utc() + timedelta(seconds=retry_after_seconds)
     else:
         # Exponential backoff: 5min * 2^(attempt-1)
         backoff = min(300 * (2 ** (job.attempt_count - 1)), 3600)
-        job.next_retry_at = now_utc() + timedelta(seconds=backoff)
+        job.next_retry_at = _now_naive_utc() + timedelta(seconds=backoff)
 
     msg_trunc, truncated = _truncate(error_message)
     event_payload = {
@@ -362,7 +417,7 @@ def defer_for_rate_limit(
     Used by the circuit breaker: when one job hits 429, remaining jobs in
     the same target are deferred without penalty since no API call was made.
     """
-    job.next_retry_at = now_utc() + timedelta(seconds=retry_after_seconds)
+    job.next_retry_at = _now_naive_utc() + timedelta(seconds=retry_after_seconds)
     job.locked_at = None
     session.commit()
 

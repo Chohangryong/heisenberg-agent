@@ -1,15 +1,29 @@
-summary:
+analysis:
+  provider: "openai"
+  model: "gpt-5.4"
+  max_tokens: 4096
+  temperature: 0.2
+
+# Fallback chain: tried in order when primary fails
+fallback:
   provider: "anthropic"
-  model: "claude-sonnet-4-5"
-  max_tokens: 1800
+  model: "claude-sonnet-4-6"
+  max_tokens: 4096
+
+fallback_2:
+  provider: "gemini"
+  model: "gemini-3.0-pro"
+  max_tokens: 4096
+
+# Legacy keys kept for backward compatibility
+summary:
+  provider: "openai"
+  model: "gpt-5.4"
+  max_tokens: 4096
   temperature: 0.2
 
 critique:
-  provider: "anthropic"
-  model: "claude-sonnet-4-5"
-  max_tokens: 1800
-  temperature: 0.3
-
-fallback:
   provider: "openai"
-  model: "gpt-4o"
+  model: "gpt-5.4"
+  max_tokens: 4096
+  temperature: 0.3

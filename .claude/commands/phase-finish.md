@@ -1,9 +1,3 @@
----
-name: phase-finish
-description: 마무리 단계. 최종 점검, worklog 생성, 커밋 준비.
-user-invocable: true
----
-
 # Phase: Finish
 
 리뷰 통과 후 실행하는 마무리 워크플로우다.

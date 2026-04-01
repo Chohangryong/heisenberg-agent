@@ -58,6 +58,7 @@ class SyncAgent:
         self._chroma = chroma_adapter
         self._notion = notion_adapter
         self._settings = settings
+        self._notion_rate_limited = False
 
     def run(self) -> dict[str, int]:
         """Run one sync cycle.
@@ -84,6 +85,93 @@ class SyncAgent:
         return stats
 
     # ------------------------------------------------------------------
+    # Per-article sync (for incremental pipeline)
+    # ------------------------------------------------------------------
+
+    def sync_one(self, article: Article) -> dict[str, int]:
+        """Ensure and process sync jobs for a single article.
+
+        Returns:
+            Stats: {ensured, synced, skipped, failed, deferred}.
+        """
+        stats = {
+            "ensured": 0, "synced": 0, "skipped": 0,
+            "failed": 0, "deferred": 0,
+        }
+
+        if article.current_analysis_id is None:
+            return stats
+
+        analysis_run = self._session.get(AnalysisRun, article.current_analysis_id)
+        if analysis_run is None:
+            return stats
+
+        enabled = self._enabled_targets()
+        if not enabled:
+            return stats
+
+        embedding_version = self._settings.vectordb.embedding_version
+
+        # Compute payload hashes
+        vector_hash = None
+        notion_hash = None
+
+        if "vector" in enabled:
+            _, vector_hash = build_vector_payload(
+                article, analysis_run, embedding_version,
+            )
+
+        if "notion" in enabled:
+            annotations = self._session.get(ArticleAnnotation, article.id)
+            tag_names = self._load_tag_names(article.id)
+            _, notion_hash = build_notion_payload(
+                article, analysis_run, annotations, tag_names,
+            )
+
+        sync_repo.ensure_sync_jobs(
+            self._session, article, enabled, embedding_version,
+            current_vector_hash=vector_hash,
+            current_notion_hash=notion_hash,
+        )
+        stats["ensured"] = 1
+
+        # Process jobs for this article
+        for target in enabled:
+            jobs = sync_repo.find_pending_jobs_for_article(
+                self._session, target, article.id,
+            )
+            for job in jobs:
+                if not sync_repo.try_lock(self._session, job.id):
+                    continue
+                try:
+                    self._process_one_job(job, target, stats)
+                except RetryAfterError as e:
+                    self._handle_rate_limit(e, job, [], stats)
+                    self._notion_rate_limited = True
+                    break
+                except Exception as e:
+                    logger.error(
+                        "sync.unexpected_error",
+                        target=target, job_id=job.id, error=str(e),
+                    )
+                    self._session.rollback()
+                    stats["failed"] += 1
+                finally:
+                    try:
+                        self._session.refresh(job)
+                        if job.locked_at is not None:
+                            sync_repo.unlock(self._session, job)
+                    except Exception:
+                        sync_repo.force_unlock(self._session, job.id)
+
+        return stats
+
+    @property
+    def is_notion_rate_limited(self) -> bool:
+        """Check if Notion hit rate limit during this cycle."""
+        return getattr(self, "_notion_rate_limited", False)
+
+    # ------------------------------------------------------------------
     # Step 1: Ensure sync jobs
     # ------------------------------------------------------------------
 
@@ -105,6 +193,7 @@ class SyncAgent:
         )
         articles = list(self._session.execute(stmt).scalars().all())
 
+        ensured_count = 0
         for article in articles:
             vector_hash = None
             notion_hash = None
@@ -134,9 +223,10 @@ class SyncAgent:
                 current_vector_hash=vector_hash,
                 current_notion_hash=notion_hash,
             )
+            ensured_count += 1
 
-        logger.info("sync.jobs_ensured", count=len(articles))
-        return len(articles)
+        logger.info("sync.jobs_ensured", articles_ensured=ensured_count)
+        return ensured_count
 
     # ------------------------------------------------------------------
     # Step 2: Process jobs per target
@@ -170,10 +260,20 @@ class SyncAgent:
                 self._session.rollback()
                 stats["failed"] += 1
             finally:
-                # Ensure unlock even on unexpected errors
-                self._session.refresh(job)
-                if job.locked_at is not None:
-                    sync_repo.unlock(self._session, job)
+                # Ensure unlock even on unexpected errors.
+                # After rollback, session.refresh() may fail on a detached
+                # instance — fall back to a direct UPDATE to clear the lock.
+                try:
+                    self._session.refresh(job)
+                    if job.locked_at is not None:
+                        sync_repo.unlock(self._session, job)
+                except Exception:
+                    logger.warning(
+                        "sync.unlock_fallback",
+                        job_id=job.id,
+                        target=target,
+                    )
+                    sync_repo.force_unlock(self._session, job.id)
 
     def _handle_rate_limit(
         self,
@@ -352,7 +452,15 @@ class SyncAgent:
                     children=payload["body"],
                 )
             else:
-                # Create path: properties + body in single API call
+                # Create path: no adapter-level retry (non-idempotent).
+                # If create succeeds but response/save fails, next run
+                # will create a duplicate page (orphan risk).
+                logger.warning(
+                    "sync.notion.create_orphan_risk",
+                    article_id=job.article_id,
+                    job_id=job.id,
+                    url=payload["properties"].get("url"),
+                )
                 page_id = self._notion.create_page(
                     properties=payload["properties"],
                     children=payload["body"],
